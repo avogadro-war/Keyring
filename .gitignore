@@ -1,0 +1,39 @@
+# Keyring Addon .gitignore
+
+# Persistence files - these contain character-specific data and should not be version controlled
+data/keyring_settings_*.lua
+
+# Any other character-specific settings files that might be created
+data/keyring_settings.lua
+
+# Temporary files
+*.tmp
+*.temp
+
+# Debug files
+debug_*.lua
+test_*.lua
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Log files
+*.log
+logs/
+
+# Backup files
+*.bak
+*.backup
