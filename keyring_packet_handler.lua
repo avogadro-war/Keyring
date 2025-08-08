@@ -1,13 +1,45 @@
 -- Debug flag - set to true to enable debug output
 local debugMode = false
 
--- Simple debug function - only prints if debugMode is true
-local function debug_print(message)
-    if debugMode then
+-- Import persistence module
+local persistence = require('keyring_persistence')
+
+-- Debug throttling system
+local debug_throttle = {
+    messages = {},  -- Track last message time for each unique message
+    default_interval = 5.0,  -- Default throttle interval in seconds
+    render_interval = 10.0   -- Longer interval for render-related messages
+}
+
+-- Throttled debug function - prevents spam from frequent calls
+local function debug_print(message, throttle_interval)
+    if not debugMode then
+        return
+    end
+    
+    -- Use default interval if none specified
+    throttle_interval = throttle_interval or debug_throttle.default_interval
+    
+    local current_time = os.time()
+    local last_time = debug_throttle.messages[message]
+    
+    -- Check if enough time has passed since last identical message
+    if not last_time or (current_time - last_time) >= throttle_interval then
         pcall(function()
             print('[Keyring Debug] ' .. tostring(message))
         end)
+        debug_throttle.messages[message] = current_time
     end
+end
+
+-- Special debug function for render-related messages (longer throttle)
+local function debug_print_render(message)
+    debug_print(message, debug_throttle.render_interval)
+end
+
+-- Function to clear debug throttle cache (useful for testing)
+local function debug_clear_throttle()
+    debug_throttle.messages = {}
 end
 
 -- Simple event system (similar to onevent2's approach)
@@ -65,44 +97,7 @@ local addon_path = AshitaCore:GetInstallPath() .. '/addons/Keyring/'
 -- Use Lua mode for persistence
 local persistence_mode = 'lua'
 
--- Player server ID storage - will be set once player is available
-local cached_player_server_id = nil
-
--- Helper function to get and cache player server ID
-local function get_player_server_id()
-    if cached_player_server_id then
-        debug_print('Returning cached player server ID: ' .. cached_player_server_id)
-        return cached_player_server_id
-    end
-    
-    debug_print('Attempting to get player server ID...')
-    local mem = AshitaCore:GetMemoryManager()
-    if not mem then
-        debug_print('Memory manager not available')
-        return nil
-    end
-    
-    local party = mem:GetParty()
-    if not party then
-        debug_print('Party manager not available')
-        return nil
-    end
-    
-    debug_print('Getting player server ID from party manager...')
-    -- Get player server ID from party manager (index 0 is always the player)
-    local player_server_id = party:GetMemberServerId(0)
-    debug_print('Party manager GetMemberServerId(0) result: ' .. tostring(player_server_id))
-    
-    if player_server_id and player_server_id > 0 then
-        cached_player_server_id = player_server_id
-        debug_print('Player server ID cached: ' .. cached_player_server_id)
-        return cached_player_server_id
-    else
-        debug_print('Failed to get valid player server ID from party manager')
-    end
-    
-    return nil
-end
+-- Player server ID functions now handled by persistence module
 
 -- Dynamis [D] zone transition mapping
 local dynamis_zone_transitions = {
@@ -118,123 +113,14 @@ local rakaznar_zone_transitions = {
 }
 
 -- Helper function to get table keys
-local function table_keys(tbl)
-    local keys = {}
-    for k, _ in pairs(tbl) do
-        table.insert(keys, tostring(k))
-    end
-    return table.concat(keys, ', ')
-end
+-- table_keys function now handled by persistence module
 
--- Load state from file (Lua only)
+-- Load state from file (now using persistence module)
 local function load_state()
-    local default_state = {
-        timestamps = {},
-        owned = {},
-        storage_canteens = 0,
-        last_canteen_time = 0,
-        dynamis_d_entry_time = 0  -- Timestamp of last Dynamis [D] entry
-    }
-    
-    -- Get player server ID for character-specific file
-    local playerServerId = get_player_server_id()
-    debug_print('Player server ID for loading: ' .. tostring(playerServerId))
-    
-    -- Only use character-specific file if we have a valid player server ID
-    local settings_file
-    if playerServerId then
-        settings_file = addon_path .. 'data/keyring_settings_' .. playerServerId .. '.lua'
-        debug_print('Loading character-specific persistence file: ' .. settings_file)
-    else
-        settings_file = addon_path .. 'data/keyring_settings.lua'
-        debug_print('Loading generic persistence file: ' .. settings_file)
-    end
-    
-    local file = io.open(settings_file, 'r')
-    if file then
-        local content = file:read('*all')
-        file:close()
-        
-        debug_print('Found persistence file: ' .. settings_file)
-        debug_print('File content length: ' .. string.len(content))
-        debug_print('File content preview: ' .. string.sub(content, 1, 200) .. '...')
-        
-        -- Create a safe environment for loading the Lua file
-        local env = {}
-        local func, err = loadstring(content)
-        if func then
-            -- Use pcall to safely set environment (setfenv might not be available in all Lua versions)
-            local success, result = pcall(function()
-                if setfenv then
-                    setfenv(func, env)
-                end
-                return func()
-            end)
-            debug_print('Persistence file loaded successfully')
-            
-            if success then
-                -- Check if the function returned a table directly
-                if type(result) == 'table' then
-                    if result.timestamps and result.owned and 
-                       type(result.timestamps) == 'table' and type(result.owned) == 'table' then
-                        debug_print('State loaded successfully')
-                        debug_print('Loaded timestamps: ' .. table_keys(result.timestamps))
-                        debug_print('Loaded owned: ' .. table_keys(result.owned))
-                        return result
-                    else
-                        debug_print('Invalid state structure in returned table')
-                    end
-                -- Check if env.state is a table
-                elseif env.state and type(env.state) == 'table' then
-                    if env.state.timestamps and env.state.owned and 
-                       type(env.state.timestamps) == 'table' and type(env.state.owned) == 'table' then
-                        debug_print('State loaded successfully')
-                        return env.state
-                    else
-                        debug_print('Invalid state structure in env.state')
-                    end
-                else
-                    debug_print('No valid state found in Lua file - result type: ' .. type(result) .. ', env.state type: ' .. type(env.state))
-                end
-            else
-                debug_print('Failed to execute Lua state file: ' .. tostring(result))
-            end
-        else
-            debug_print('Failed to load Lua state file: ' .. tostring(err))
-        end
-    else
-        debug_print('Persistence file not found')
-    end
-    
-    debug_print('Starting with fresh state')
-    return default_state
+    return persistence.load_state(debug_print)
 end
 
--- Helper function to serialize tables for Lua file output
-local function serialize_table(tbl)
-    if not tbl or type(tbl) ~= 'table' then
-        return '{}'
-    end
-    
-    local parts = {}
-    local seen_keys = {} -- Track seen keys to prevent duplicates
-    
-    for k, v in pairs(tbl) do
-        local key_str = tostring(k)
-        if not seen_keys[key_str] then
-            seen_keys[key_str] = true
-            if type(v) == 'number' then
-                table.insert(parts, string.format('[%s] = %d', key_str, v))
-            elseif type(v) == 'boolean' then
-                table.insert(parts, string.format('[%s] = %s', key_str, tostring(v)))
-            elseif type(v) == 'string' then
-                table.insert(parts, string.format('[%s] = "%s"', key_str, v))
-            end
-        end
-    end
-    
-    return '{' .. table.concat(parts, ', ') .. '}'
-end
+-- serialize_table function now handled by persistence module
 
 -- Initialize with empty state - will be loaded when player is ready
 local state = {
@@ -272,73 +158,10 @@ local function set_state(new_state)
     end
 end
 
--- Now define save_state after get_state is available
+-- Save state to file (now using persistence module)
 local function save_state()
     local current_state = get_state()
-    debug_print('Saving state')
-    
-    -- Get player server ID for character-specific file
-    local playerServerId = get_player_server_id()
-    debug_print('Player server ID for saving: ' .. tostring(playerServerId))
-    
-    -- Only use character-specific file if we have a valid player server ID
-    local settings_file
-    if playerServerId then
-        settings_file = addon_path .. 'data/keyring_settings_' .. playerServerId .. '.lua'
-        debug_print('Saving to character-specific file: ' .. settings_file)
-    else
-        settings_file = addon_path .. 'data/keyring_settings.lua'
-        debug_print('Saving to generic file: ' .. settings_file)
-    end
-    
-    -- Ensure data directory exists (without using os.execute)
-    local dir = string.match(settings_file, '(.+)/[^/]*$')
-    if dir then
-        -- Try to create directory using Lua file operations instead of os.execute
-        local test_file = dir .. '/test_write.tmp'
-        local test_handle = io.open(test_file, 'w')
-        if test_handle then
-            test_handle:close()
-            os.remove(test_file)  -- Clean up test file
-        else
-            debug_print('Warning: Could not write to directory: ' .. dir)
-        end
-    end
-    
-    local file = io.open(settings_file, 'w')
-    if file then
-        -- Use the already-validated player server ID for file header
-        local characterId = playerServerId or "Unknown"
-        
-        -- Create Lua file with state data
-        local lua_content = string.format([[
--- Keyring Addon State File
--- Generated automatically - do not edit manually
--- Character Server ID: %s
-
-local state = {
-    timestamps = %s,
-    owned = %s,
-    storage_canteens = %d,
-    last_canteen_time = %d,
-    dynamis_d_entry_time = %d
-}
-
-return state
-]], 
-            characterId,
-            serialize_table(current_state.timestamps or {}),
-            serialize_table(current_state.owned or {}),
-            current_state.storage_canteens or 0,
-            current_state.last_canteen_time or 0,
-            current_state.dynamis_d_entry_time or 0
-        )
-        file:write(lua_content)
-        file:close()
-        debug_print('State saved')
-    else
-        debug_print('Failed to save state')
-    end
+    persistence.save_state(current_state, debug_print)
 end
 
 -- Callback hooks
@@ -373,11 +196,19 @@ local function update_keyitem_state(id)
     local now = os.time()
     
     -- Set timestamp for new acquisition
-    current_state.timestamps[id] = now
     current_state.owned[id] = true
     debug_print('Key item acquired: ' .. tostring(id))
 
-    if id == 3137 then
+    -- Handle special cases for different key items
+    if id == 3300 then
+        -- Shiny Rakaznar Plate - don't set timestamp, cooldown starts when used
+        debug_print('Shiny Rakaznar Plate acquired - no timestamp set (cooldown starts when used)')
+    elseif id == 3212 then
+        -- Moglophone - set timestamp when acquired (cooldown starts immediately)
+        current_state.timestamps[id] = now
+        debug_print('Moglophone acquired - 20-hour cooldown started')
+        print(chat.header('Keyring'):append(chat.message('Moglophone acquired - 20-hour cooldown started')))
+    elseif id == 3137 then
         -- Don't set last_canteen_time here - it should be set when a new canteen is generated
         -- not when the key item is acquired
         debug_print('Canteen key item acquired')
@@ -613,7 +444,7 @@ function handler.set_current_zone(zone_id)
         return false
     end
     
-    last_zone_id = zone_id
+    current_zone = zone_id
     debug_print('Current zone manually set to: ' .. zone_id)
     return true
 end
@@ -735,13 +566,16 @@ ashita.events.register('packet_in', 'KeyItems_0x55', function(e)
                     debug_print('Key item lost: ' .. tostring(ki))
                     current_state.owned[ki] = false
                     
-                    -- Special handling for Shiny Rakaznar Plate loss
+                    -- Special handling for key item loss
                     if ki == 3300 then
                         -- Shiny Rakaznar Plate was lost - start cooldown timer
                         local now = os.time()
                         current_state.timestamps[ki] = now  -- Set timestamp when plate is lost
                         debug_print('Shiny Rakaznar Plate lost via 0x55 packet - 20-hour cooldown started')
                         print(chat.header('Keyring'):append(chat.message('Shiny Rakaznar Plate lost - 20-hour cooldown started')))
+                    elseif ki == 3212 then
+                        -- Moglophone was lost - just update owned status (cooldown already started on acquisition)
+                        debug_print('Moglophone lost via 0x55 packet - cooldown continues from acquisition time')
                     end
                     
                     save_state()
@@ -752,7 +586,8 @@ ashita.events.register('packet_in', 'KeyItems_0x55', function(e)
 end)
 
 -- Improved zone change detection system using direct packet parsing
-local last_zone_id = nil
+local current_zone = nil
+local previous_zone = nil
 
 -- Zone change detection using 0x0A packets with direct packet parsing
 ashita.events.register('packet_in', 'Keyring_0x0A', function(e)
@@ -763,14 +598,21 @@ ashita.events.register('packet_in', 'Keyring_0x0A', function(e)
     
     debug_print('Zone change packet received - zone ID: ' .. zoneId)
     
+    -- Track zone transitions: if current_zone exists, set it as previous_zone
+    if current_zone ~= nil then
+        previous_zone = current_zone
+    end
+    
+    -- Record new zone from packet
+    current_zone = zoneId
+    
     -- Only process if zone actually changed
-    if zoneId == last_zone_id then
-        debug_print('Zone unchanged: ' .. zoneId)
+    if previous_zone == current_zone then
+        debug_print('Zone unchanged: ' .. current_zone)
         return
     end
     
-    debug_print('Zone changed from ' .. (last_zone_id or 'unknown') .. ' to ' .. zoneId)
-    last_zone_id = zoneId
+    debug_print('Zone changed from ' .. (previous_zone or 'unknown') .. ' to ' .. current_zone)
     
     -- Trigger zone change event
     zone_events.onZoneChange:trigger(zoneId)
@@ -800,13 +642,13 @@ ashita.events.register('packet_in', 'Keyring_0x0A', function(e)
     local current_state = get_state()
     
     for pre_zone_id, dynamis_zone_id in pairs(dynamis_zone_transitions) do
-        if zoneId == dynamis_zone_id then
-            -- We're in a Dynamis [D] zone - record the entry
+        if previous_zone == pre_zone_id and current_zone == dynamis_zone_id then
+            -- We're transitioning from an entry zone to a Dynamis [D] zone - record the entry
             local now = os.time()
             current_state.dynamis_d_entry_time = now
             save_state()
             
-            debug_print('Dynamis [D] entry detected - zone ' .. dynamis_zone_id)
+            debug_print('Dynamis [D] entry detected - zone transition from ' .. pre_zone_id .. ' to ' .. dynamis_zone_id)
             print(chat.header('Keyring'):append(chat.message(string.format('Entered Dynamis [D] zone (ID: %d) - cooldown started', dynamis_zone_id))))
             break
         end
@@ -814,10 +656,10 @@ ashita.events.register('packet_in', 'Keyring_0x0A', function(e)
     
     -- Check for Ra'Kaznar zone transitions (Shiny Rakaznar Plate usage detection)
     for pre_zone_id, target_zones in pairs(rakaznar_zone_transitions) do
-        if last_zone_id == pre_zone_id then
+        if previous_zone == pre_zone_id then
             -- Check if we're transitioning from Kamihr Drifts to any Outer Ra'Kaznar zone
             for _, target_zone_id in ipairs(target_zones) do
-                if zoneId == target_zone_id then
+                if current_zone == target_zone_id then
                     -- Player used their Shiny Rakaznar Plate - start cooldown timer
                     local plate_id = 3300  -- Shiny Rakaznar Plate ID
                     if current_state.owned and current_state.owned[plate_id] == true then
@@ -826,7 +668,7 @@ ashita.events.register('packet_in', 'Keyring_0x0A', function(e)
                         current_state.timestamps[plate_id] = now  -- Set timestamp when plate is used
                         save_state()
                         
-                        debug_print('Shiny Rakaznar Plate usage detected - zone transition from ' .. pre_zone_id .. ' to ' .. zoneId)
+                        debug_print('Shiny Rakaznar Plate usage detected - zone transition from ' .. pre_zone_id .. ' to ' .. current_zone)
                         print(chat.header('Keyring'):append(chat.message('Shiny Rakaznar Plate used - 20-hour cooldown started')))
                     end
                     break
@@ -903,12 +745,13 @@ function handler.get_key_item_statuses()
     
     local current_state = get_state()
     
-    debug_print('Current state in get_key_item_statuses:')
-    debug_print('  timestamps: ' .. (current_state.timestamps and 'exists' or 'nil'))
-    debug_print('  owned: ' .. (current_state.owned and 'exists' or 'nil'))
+    -- Throttle these debug messages to prevent spam during GUI rendering
+    debug_print('Current state in get_key_item_statuses:', 10.0)  -- 10 second throttle
+    debug_print('  timestamps: ' .. (current_state.timestamps and 'exists' or 'nil'), 10.0)
+    debug_print('  owned: ' .. (current_state.owned and 'exists' or 'nil'), 10.0)
     if current_state.timestamps then
         for id, timestamp in pairs(current_state.timestamps) do
-            debug_print('    ID ' .. id .. ': ' .. timestamp)
+            debug_print('    ID ' .. id .. ': ' .. timestamp, 10.0)
         end
     end
 
@@ -965,6 +808,23 @@ end
 function handler.set_debug_mode(enabled)
     debugMode = enabled
     debug_print("Debug mode " .. (enabled and "enabled" or "disabled") .. " in packet handler")
+end
+
+-- API: Clear debug throttle cache
+function handler.clear_debug_throttle()
+    debug_clear_throttle()
+    debug_print("Debug throttle cache cleared")
+end
+
+-- API: Set debug throttle intervals
+function handler.set_debug_throttle_intervals(default_interval, render_interval)
+    if default_interval and type(default_interval) == 'number' then
+        debug_throttle.default_interval = default_interval
+    end
+    if render_interval and type(render_interval) == 'number' then
+        debug_throttle.render_interval = render_interval
+    end
+    debug_print("Debug throttle intervals updated - default: " .. debug_throttle.default_interval .. "s, render: " .. debug_throttle.render_interval .. "s")
 end
 
 -- Flag to track if we've done the post-0x0A key item check

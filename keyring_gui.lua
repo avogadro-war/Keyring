@@ -36,10 +36,25 @@ end
 local function calculate_window_dimensions(keyItemStatuses)
     local itemCount = #keyItemStatuses
     
-    -- Calculate height
+    -- Calculate height for key items section
     local spacingCount = math.max(0, itemCount - 1)
-    local contentHeight = HEADER_HEIGHT + (itemCount * ITEM_HEIGHT) + (spacingCount * SPACING_HEIGHT)
-    local requiredHeight = math.max(contentHeight + PADDING, MIN_HEIGHT)
+    local keyItemsHeight = HEADER_HEIGHT + (itemCount * ITEM_HEIGHT) + (spacingCount * SPACING_HEIGHT)
+    
+    -- Calculate height for Dynamis [D] section (reduced padding)
+    local dynamisHeaderHeight = 20      -- "Dynamis [D] Entry Cooldown" text
+    local dynamisStatusHeight = 18      -- Status line
+    local dynamisSpacing = 4            -- Reduced spacing between elements
+    local dynamisSeparatorHeight = 8    -- Separator line
+    local dynamisPadding = 8            -- Reduced padding for auto-scaling safety
+    local dynamisBottomPadding = 5      -- Reduced padding below the row
+    
+    local dynamisSectionHeight = dynamisHeaderHeight + dynamisStatusHeight + 
+                                dynamisSpacing + dynamisSeparatorHeight + 
+                                dynamisPadding + dynamisBottomPadding
+    
+    -- Total height calculation with minimal padding
+    local totalContentHeight = keyItemsHeight + dynamisSectionHeight
+    local requiredHeight = math.max(totalContentHeight + PADDING + 5, MIN_HEIGHT)  -- Reduced from 20px to 5px safety margin
     
     -- Calculate width based on longest item name
     local maxNameLength = 0
@@ -146,7 +161,7 @@ local function render_time_remaining(item, hasItem, storage_canteens, packet_tra
     local col_start = imgui.GetColumnOffset()
     local col_width = imgui.GetColumnWidth()
     
-    if showCanteenCount then
+    if show_canteen_count then
         -- For canteen, render main text and count separately
         local mainTextWidth = imgui.CalcTextSize(displayText)
         local canteenText = string.format(' (%d/3)', storage_canteens)
@@ -235,71 +250,136 @@ local function render_key_item_row(item, hasItem, storage_canteens, packet_track
 end
 
 -- Render Dynamis [D] cooldown section
-local function render_dynamis_d_section(packet_tracker)
+local function render_dynamis_d_section(packet_tracker, total_width)
+    -- Add row separator above Dynamis section
+    imgui.PushStyleColor(3, {0.3, 0.3, 0.3, 0.8})  -- Separator color
     imgui.Separator()
+    imgui.PopStyleColor()
+    
+    -- Add spacing for visual separation
+    imgui.Spacing()
     imgui.Spacing()
     
-    -- Section header
-    imgui.TextColored({1, 1, 0, 1}, 'Dynamis [D] Entry Cooldown')
-    imgui.Spacing()
+    -- Set up 2 columns for Dynamis [D] section (no separator between columns)
+    imgui.Columns(2, 'dynamisColumns', false)
+    
+    -- Fixed column widths for better layout
+    local labelWidth = total_width * 0.55  -- Narrower for label
+    local statusWidth = total_width * 0.45  -- Wider for status text
+    
+    imgui.SetColumnWidth(0, labelWidth)      -- Label
+    imgui.SetColumnWidth(1, statusWidth)     -- Status
+    
+    -- Section header (left column) - centered
+    local headerText = 'Dynamis [D] Entry'
+    local col_start = imgui.GetColumnOffset()
+    local col_width = imgui.GetColumnWidth()
+    local text_width = imgui.CalcTextSize(headerText)
+    local pos_x = col_start + (col_width - text_width) / 2
+    imgui.SetCursorPosX(pos_x)
+    imgui.PushStyleColor(0, {1, 0.8, 0, 1})  -- Text color (warmer gold)
+    imgui.Text(headerText)
+    imgui.PopStyleColor()
+    imgui.NextColumn()
     
     -- Get cooldown status
     local remaining = packet_tracker.get_dynamis_d_cooldown_remaining()
-    local is_available = packet_tracker.is_dynamis_d_available()
     local entry_time = packet_tracker.get_dynamis_d_entry_time()
     
-    -- Status display
-    local status_text = is_available and 'Available' or 'On Cooldown'
-    local status_color = is_available and {0, 1, 0, 1} or {1, 0.2, 0.2, 1}
-    
-    imgui.Text('Status: ')
-    imgui.SameLine()
-    imgui.TextColored(status_color, status_text)
-    
-    -- Time remaining display
-    if remaining and remaining > 0 then
+    -- Status display (right column) with improved formatting
+    if entry_time == 0 or entry_time == nil then
+        -- No entry recorded
+        local display_text = 'Unknown'
+        local text_color = {0.6, 0.6, 0.6, 1} -- Softer gray
+        
+        -- Center the status text in the column
+        local col_start = imgui.GetColumnOffset()
+        local col_width = imgui.GetColumnWidth()
+        local text_width = imgui.CalcTextSize(display_text)
+        local pos_x = col_start + (col_width - text_width) / 2
+        imgui.SetCursorPosX(pos_x)
+        imgui.TextColored(text_color, display_text)
+        
+    elseif remaining and remaining > 0 then
+        -- On cooldown - show time remaining with improved formatting
         local hours = math.floor(remaining / 3600)
         local minutes = math.floor((remaining % 3600) / 60)
         local seconds = remaining % 60
+        local timeText = string.format('%02d:%02d:%02d', hours, minutes, seconds)
         
-        imgui.Text('Time Remaining: ')
+        -- Calculate positioning for multi-colored text
+        local col_start = imgui.GetColumnOffset()
+        local col_width = imgui.GetColumnWidth()
+        
+        -- Calculate total width of all text parts
+        local onCooldownWidth = imgui.CalcTextSize('On Cooldown')
+        local colonWidth = imgui.CalcTextSize(': [')
+        local timeWidth = imgui.CalcTextSize(timeText)
+        local bracketWidth = imgui.CalcTextSize(']')
+        local totalWidth = onCooldownWidth + colonWidth + timeWidth + bracketWidth
+        
+        -- Center the entire text block
+        local pos_x = col_start + (col_width - totalWidth) / 2
+        imgui.SetCursorPosX(pos_x)
+        
+        -- Render multi-colored text: "On Cooldown: [time]"
+        imgui.TextColored({1, 0.2, 0.2, 1}, 'On Cooldown')  -- Red text
         imgui.SameLine()
-        imgui.TextColored({1, 1, 1, 1}, string.format('%02d:%02d:%02d', hours, minutes, seconds))
-    elseif entry_time > 0 then
-        imgui.Text('Time Remaining: ')
+        imgui.TextColored({1, 1, 1, 1}, ': [')  -- White text
         imgui.SameLine()
-        imgui.TextColored({0, 1, 0, 1}, 'Ready')
+        imgui.TextColored({1, 0.2, 0.2, 1}, timeText)  -- Red text
+        imgui.SameLine()
+        imgui.TextColored({1, 1, 1, 1}, ']')  -- White text
+        
     else
-        imgui.Text('Time Remaining: ')
-        imgui.SameLine()
-        imgui.TextColored({0.7, 0.7, 0.7, 1}, 'No entry recorded')
+        -- Available
+        local display_text = 'Ready'
+        local text_color = {0.2, 1, 0.2, 1} -- Brighter green
+        
+        -- Center the status text in the column
+        local col_start = imgui.GetColumnOffset()
+        local col_width = imgui.GetColumnWidth()
+        local text_width = imgui.CalcTextSize(display_text)
+        local pos_x = col_start + (col_width - text_width) / 2
+        imgui.SetCursorPosX(pos_x)
+        imgui.TextColored(text_color, display_text)
     end
     
-    -- Entry time display
-    if entry_time > 0 then
-        local entry_date = os.date('%Y-%m-%d %H:%M:%S', entry_time)
-        imgui.Text('Last Entry: ')
-        imgui.SameLine()
-        imgui.TextColored({0.8, 0.8, 0.8, 1}, entry_date)
-    end
-    
-    -- Tooltip with additional info
+    -- Enhanced tooltip with more detailed info
     if imgui.IsItemHovered() then
         imgui.BeginTooltip()
-        imgui.Text('Dynamis [D] entry cooldown is 60 hours.')
-        imgui.Text('Tracked automatically when entering')
-        imgui.Text('Dynamis [D] zones from specific areas.')
+        imgui.PushStyleColor(0, {1, 0.8, 0, 1})  -- Text color
+        imgui.Text('Dynamis [D] Entry System')
+        imgui.PopStyleColor()
+        imgui.Separator()
+        imgui.Text('• 60-hour cooldown between entries')
+        imgui.Text('• Automatically tracked on zone entry')
+        imgui.Text('• Entry zones: Jeuno, Bastok, San d\'Oria, Windurst')
+        if entry_time ~= 0 and entry_time ~= nil then
+            local entryDate = os.date('%Y-%m-%d %H:%M', entry_time)
+            imgui.Text('• Last entry: ' .. entryDate)
+        end
         imgui.EndTooltip()
     end
+    
+    imgui.NextColumn()
+    
+    -- Add spacing at the bottom
+    imgui.Spacing()
+    imgui.Spacing()
+    
+    -- Add row separator below Dynamis section
+    imgui.PushStyleColor(3, {0.3, 0.3, 0.3, 0.8})  -- Separator color
+    imgui.Separator()
+    imgui.PopStyleColor()
 end
 
 -- Main render function
 function gui.render(keyItemStatuses, trackedKeyItems, storage_canteens, packet_tracker)
     if not showGui[1] then return end
 
-    -- Calculate dynamic window dimensions (add extra height for Dynamis [D] section)
+    -- Calculate dynamic window dimensions (includes Dynamis [D] section)
     local width, height = calculate_window_dimensions(keyItemStatuses)
-    height = height + 120  -- Add space for Dynamis [D] section
     imgui.SetNextWindowSizeConstraints({width, height}, {width, height})
 
     if not imgui.Begin('Keyring', showGui) then
@@ -322,7 +402,7 @@ function gui.render(keyItemStatuses, trackedKeyItems, storage_canteens, packet_t
     imgui.Columns(1)
     
     -- Render Dynamis [D] section
-    render_dynamis_d_section(packet_tracker)
+    render_dynamis_d_section(packet_tracker, total_width)
     
     imgui.End()
 end

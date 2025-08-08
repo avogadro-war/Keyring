@@ -297,9 +297,15 @@ ashita.events.register('d3d_present', 'render', function()
     -- Render the GUI using the modularized GUI system
     local keyItemStatuses = packet_tracker.get_key_item_statuses()
     
-    -- Debug: Print the statuses being passed to GUI
+    -- Debug: Print the statuses being passed to GUI (throttled to prevent spam)
     if debug_mode and #keyItemStatuses > 0 then
-        debug_print('GUI render - keyItemStatuses count: ' .. #keyItemStatuses)
+        -- Use a throttled debug print for render-related messages
+        local debug_message = 'GUI render - keyItemStatuses count: ' .. #keyItemStatuses
+        local current_time = os.time()
+        if not _G.last_gui_debug_time or (current_time - _G.last_gui_debug_time) >= 10 then
+            debug_print(debug_message)
+            _G.last_gui_debug_time = current_time
+        end
     end
     
     gui.render(keyItemStatuses, trackedKeyItems, storage_canteens, packet_tracker)
