@@ -181,6 +181,8 @@ ashita.events.register('command', 'command_cb', function(e)
         return true
     end
     
+
+    
     -- Test zone detection
     if args[2] == 'test_zone' then
         local current_zone = packet_tracker.get_current_zone()
@@ -209,6 +211,7 @@ ashita.events.register('command', 'command_cb', function(e)
         print(chat.message('  • Mystical Canteen (20h generation cycle)'))
         print(chat.message('  • Shiny Rakaznar Plate (20h cooldown)'))
         print(chat.message('  • Dynamis [D] entry cooldown (60h cooldown)'))
+        print(chat.message('  • Empty Hourglass cooldown (24h cooldown)'))
         print(chat.message(''))
         print(chat.message('Available commands:'))
         print(chat.message('  /keyring or /keyring gui - Toggle the GUI window'))
@@ -217,6 +220,7 @@ ashita.events.register('command', 'command_cb', function(e)
         print(chat.message('  /keyring notify - Toggle zone change notifications'))
         print(chat.message('  /keyring status - Show addon status and persistence mode'))
         print(chat.message('  /keyring test_dynamis - Test Dynamis [D] entry (for testing)'))
+    
         print(chat.message('  /keyring test_zone - Test zone detection'))
         print(chat.message('  /keyring help - Show this help information'))
         print(chat.message(''))
@@ -226,6 +230,7 @@ ashita.events.register('command', 'command_cb', function(e)
         print(chat.message('  • Zone change notifications'))
         print(chat.message('  • Special canteen storage tracking (generation-based)'))
         print(chat.message('  • Dynamis [D] entry tracking (automatic zone detection)'))
+        print(chat.message('  • Empty Hourglass tracking (automatic packet detection)'))
         print(chat.message('  • Persistent state across sessions (Lua-based)'))
         print(chat.message('  • Shows "Unknown" until first acquisition'))
         print(chat.message('  • Notifications for available items on zone change'))

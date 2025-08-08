@@ -52,8 +52,20 @@ local function calculate_window_dimensions(keyItemStatuses)
                                 dynamisSpacing + dynamisSeparatorHeight + 
                                 dynamisPadding + dynamisBottomPadding
     
+    -- Calculate height for Hourglass section (similar to Dynamis)
+    local hourglassHeaderHeight = 20    -- "Empty Hourglass Time" text
+    local hourglassStatusHeight = 18    -- Status line
+    local hourglassSpacing = 4          -- Reduced spacing between elements
+    local hourglassSeparatorHeight = 8  -- Separator line
+    local hourglassPadding = 8          -- Reduced padding for auto-scaling safety
+    local hourglassBottomPadding = 5    -- Reduced padding below the row
+    
+    local hourglassSectionHeight = hourglassHeaderHeight + hourglassStatusHeight + 
+                                  hourglassSpacing + hourglassSeparatorHeight + 
+                                  hourglassPadding + hourglassBottomPadding
+    
     -- Total height calculation with minimal padding
-    local totalContentHeight = keyItemsHeight + dynamisSectionHeight
+    local totalContentHeight = keyItemsHeight + dynamisSectionHeight + hourglassSectionHeight
     local requiredHeight = math.max(totalContentHeight + PADDING + 5, MIN_HEIGHT)  -- Reduced from 20px to 5px safety margin
     
     -- Calculate width based on longest item name
@@ -277,7 +289,7 @@ local function render_dynamis_d_section(packet_tracker, total_width)
     local text_width = imgui.CalcTextSize(headerText)
     local pos_x = col_start + (col_width - text_width) / 2
     imgui.SetCursorPosX(pos_x)
-    imgui.PushStyleColor(0, {1, 0.8, 0, 1})  -- Text color (warmer gold)
+    imgui.PushStyleColor(0, {1, 1, 1, 1})  -- Text color (white)
     imgui.Text(headerText)
     imgui.PopStyleColor()
     imgui.NextColumn()
@@ -285,6 +297,16 @@ local function render_dynamis_d_section(packet_tracker, total_width)
     -- Get cooldown status
     local remaining = packet_tracker.get_dynamis_d_cooldown_remaining()
     local entry_time = packet_tracker.get_dynamis_d_entry_time()
+    
+    -- Check Dynamis availability and manage hourglass increment
+    local is_dynamis_available = (remaining == nil or remaining <= 0)
+    if is_dynamis_available then
+        -- Dynamis is available - start hourglass increment if not already started
+        packet_tracker.start_hourglass_increment()
+    else
+        -- Dynamis is on cooldown - stop hourglass increment if it was running
+        packet_tracker.stop_hourglass_increment()
+    end
     
     -- Status display (right column) with improved formatting
     if entry_time == 0 or entry_time == nil then
@@ -374,6 +396,151 @@ local function render_dynamis_d_section(packet_tracker, total_width)
     imgui.PopStyleColor()
 end
 
+-- Render Hourglass cooldown section
+local function render_hourglass_section(packet_tracker, total_width)
+    -- Add spacing for visual separation
+    imgui.Spacing()
+    imgui.Spacing()
+    
+    -- Set up 2 columns for Hourglass section (no separator between columns)
+    imgui.Columns(2, 'hourglassColumns', false)
+    
+    -- Fixed column widths for better layout
+    local labelWidth = total_width * 0.55  -- Narrower for label
+    local statusWidth = total_width * 0.45  -- Wider for status text
+    
+    imgui.SetColumnWidth(0, labelWidth)      -- Label
+    imgui.SetColumnWidth(1, statusWidth)     -- Status
+    
+    -- Section header (left column) - centered
+    local headerText = 'Empty Hourglass Time'
+    local col_start = imgui.GetColumnOffset()
+    local col_width = imgui.GetColumnWidth()
+    local text_width = imgui.CalcTextSize(headerText)
+    local pos_x = col_start + (col_width - text_width) / 2
+    imgui.SetCursorPosX(pos_x)
+    imgui.PushStyleColor(0, {1, 1, 1, 1})  -- Text color (white)
+    imgui.Text(headerText)
+    imgui.PopStyleColor()
+    imgui.NextColumn()
+    
+    -- Get hourglass status
+    local hourglass_remaining = packet_tracker.get_hourglass_time_remaining()
+    local hourglass_time = packet_tracker.get_hourglass_time()
+    local dynamis_remaining = packet_tracker.get_dynamis_d_cooldown_remaining()
+    local is_dynamis_available = (dynamis_remaining == nil or dynamis_remaining <= 0)
+    
+    -- Status display (right column) with conditional coloring
+    if hourglass_time == 0 or hourglass_time == nil then
+        -- No hourglass use recorded
+        local text_color = {0.6, 0.6, 0.6, 1} -- Softer gray
+        
+        -- Center the status text in the column
+        local col_start = imgui.GetColumnOffset()
+        local col_width = imgui.GetColumnWidth()
+        
+        -- Calculate center position for each line individually
+        local line1 = 'Unknown.'
+        local line2 = 'Ask the Enigmatic Footprints.'
+        local line1_width = imgui.CalcTextSize(line1)
+        local line2_width = imgui.CalcTextSize(line2)
+        
+        -- Center first line
+        local pos_x1 = col_start + (col_width - line1_width) / 2
+        imgui.SetCursorPosX(pos_x1)
+        imgui.TextColored(text_color, line1)
+        
+        -- Center second line
+        local pos_x2 = col_start + (col_width - line2_width) / 2
+        imgui.SetCursorPosX(pos_x2)
+        imgui.TextColored(text_color, line2)
+        
+    elseif hourglass_remaining and hourglass_remaining > 0 then
+        -- On cooldown - show time remaining
+        local hours = math.floor(hourglass_remaining / 3600)
+        local minutes = math.floor((hourglass_remaining % 3600) / 60)
+        local seconds = hourglass_remaining % 60
+        local timeText = string.format('%02d:%02d:%02d', hours, minutes, seconds)
+        
+        -- Determine text color based on user's specification: yellow when Hourglass Time - Dynamis Time Remaining > 0, green otherwise
+        local text_color
+        if dynamis_remaining and dynamis_remaining > 0 then
+            local time_diff = hourglass_time - dynamis_remaining
+            if time_diff > 0 then
+                text_color = {1, 1, 0, 1}      -- Yellow (hourglass ready after Dynamis)
+            else
+                text_color = {0.2, 1, 0.2, 1}  -- Green (hourglass ready before/with Dynamis)
+            end
+        else
+            text_color = {0.2, 1, 0.2, 1}      -- Green (Dynamis ready, hourglass on cooldown)
+        end
+        
+        -- Center the status text in the column
+        local col_start = imgui.GetColumnOffset()
+        local col_width = imgui.GetColumnWidth()
+        local text_width = imgui.CalcTextSize(timeText)
+        local pos_x = col_start + (col_width - text_width) / 2
+        imgui.SetCursorPosX(pos_x)
+        imgui.TextColored(text_color, timeText)
+        
+    else
+        -- Available - show current hourglass time (including increment if Dynamis is available)
+        local display_text
+        local text_color = {0.2, 1, 0.2, 1} -- Brighter green
+        
+        if is_dynamis_available and hourglass_time > 0 then
+            -- Show incrementing time when Dynamis is available
+            local hours = math.floor(hourglass_time / 3600)
+            local minutes = math.floor((hourglass_time % 3600) / 60)
+            local seconds = hourglass_time % 60
+            display_text = string.format('%02d:%02d:%02d', hours, minutes, seconds)
+            text_color = {0.8, 1, 0.8, 1} -- Light green to indicate incrementing
+        else
+            -- Show "Ready" when not incrementing
+            display_text = 'Ready'
+        end
+        
+        -- Center the status text in the column
+        local col_start = imgui.GetColumnOffset()
+        local col_width = imgui.GetColumnWidth()
+        local text_width = imgui.CalcTextSize(display_text)
+        local pos_x = col_start + (col_width - text_width) / 2
+        imgui.SetCursorPosX(pos_x)
+        imgui.TextColored(text_color, display_text)
+    end
+    
+    -- Enhanced tooltip with more detailed info
+    if imgui.IsItemHovered() then
+        imgui.BeginTooltip()
+        imgui.PushStyleColor(0, {1, 1, 1, 1})  -- Text color (white)
+        imgui.Text('Empty Hourglass System')
+        imgui.PopStyleColor()
+        imgui.Separator()
+        imgui.Text('• 24-hour cooldown between uses')
+        imgui.Text('• Automatically detected via packet sniffing')
+        imgui.Text('• Increments by 1 second every 5 seconds when Dynamis [D] is available')
+        imgui.Text('• Green: Hourglass Time <= Dynamis Time Remaining')
+        imgui.Text('• Yellow: Hourglass Time > Dynamis Time Remaining')
+        imgui.Text('• Light green: Currently incrementing (Dynamis [D] available)')
+        if hourglass_time ~= 0 and hourglass_time ~= nil then
+            local hourglassDate = os.date('%Y-%m-%d %H:%M', hourglass_time)
+            imgui.Text('• Last use: ' .. hourglassDate)
+        end
+        imgui.EndTooltip()
+    end
+    
+    imgui.NextColumn()
+    
+    -- Add spacing at the bottom
+    imgui.Spacing()
+    imgui.Spacing()
+    
+    -- Add row separator below Hourglass section
+    imgui.PushStyleColor(3, {0.3, 0.3, 0.3, 0.8})  -- Separator color
+    imgui.Separator()
+    imgui.PopStyleColor()
+end
+
 -- Main render function
 function gui.render(keyItemStatuses, trackedKeyItems, storage_canteens, packet_tracker)
     if not showGui[1] then return end
@@ -403,6 +570,9 @@ function gui.render(keyItemStatuses, trackedKeyItems, storage_canteens, packet_t
     
     -- Render Dynamis [D] section
     render_dynamis_d_section(packet_tracker, total_width)
+    
+    -- Render Hourglass section
+    render_hourglass_section(packet_tracker, total_width)
     
     imgui.End()
 end

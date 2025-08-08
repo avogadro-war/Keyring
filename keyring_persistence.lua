@@ -68,7 +68,9 @@ function persistence.load_state(debug_print)
         owned = {},
         storage_canteens = 0,
         last_canteen_time = 0,
-        dynamis_d_entry_time = 0  -- Timestamp of last Dynamis [D] entry
+        dynamis_d_entry_time = 0,  -- Timestamp of last Dynamis [D] entry
+        hourglass_time = 0,  -- Timestamp of last hourglass use
+        hourglass_increment_start_time = 0  -- Timestamp when hourglass increment started (when Dynamis becomes available)
     }
     
     -- Get addon path for absolute file paths
