@@ -150,7 +150,12 @@ local function render_time_remaining(item, hasItem, storage_canteens, packet_tra
         -- Regular key item cooldown logic
         local timestamp = item.timestamp or 0
         
-        if timestamp == 0 or item.remaining == nil then
+        -- Special handling for Shiny Rakaznar Plate (ID 3300)
+        if item.id == 3300 and hasItem and (timestamp == 0 or item.remaining == nil or item.remaining <= 0) then
+            -- Player has the plate and no cooldown - show dash since cooldown starts when used
+            textColor = {0.7, 0.7, 0.7, 1} -- gray
+            displayText = '-'
+        elseif timestamp == 0 or item.remaining == nil then
             -- No timestamp recorded yet or no remaining time calculated
             textColor = {0.7, 0.7, 0.7, 1} -- gray
             displayText = 'Unknown'
