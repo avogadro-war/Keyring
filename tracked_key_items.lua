@@ -1,3 +1,4 @@
+-- Tracked Key Items Configuration
 -- Key: Key Item ID (number)
 -- Value: Cooldown duration in seconds
 

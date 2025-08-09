@@ -47,6 +47,4 @@ function key_items.get_id(name)
     return key_items.nameToId[name]
 end
 
-
-
 return key_items

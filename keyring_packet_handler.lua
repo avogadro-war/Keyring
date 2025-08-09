@@ -1,8 +1,16 @@
+-- Keyring Packet Handler Module
+-- Handles all packet processing and state management for the keyring addon
+
 -- Debug flag - set to true to enable debug output
 local debugMode = false
 
--- Import persistence module
+-- Import required modules
 local persistence = require('keyring_persistence')
+require('common')
+local struct = require('struct')
+local trackedKeyItems = require('tracked_key_items')
+local key_items = require('key_items_optimized')
+local chat = require('chat')
 
 -- Debug throttling system
 local debug_throttle = {
@@ -42,7 +50,7 @@ local function debug_clear_throttle()
     debug_throttle.messages = {}
 end
 
--- Simple event system (similar to onevent2's approach)
+-- Simple event system
 local event = {}
 
 local event_object = {}
@@ -74,30 +82,16 @@ function event.new()
                         {__index = event_object})
 end
 
-require('common')
-local struct = require('struct')
-local trackedKeyItems = require('tracked_key_items')
-local key_items = require('key_items_optimized')
-local chat = require('chat')
-
-local handler = {}
-
 -- Event system for zone changes
 local zone_events = {
     onZoneChange = event.new(),
 }
 
--- Persistence system using Lua files
-
--- Get the addon directory path
-local addon_path = AshitaCore:GetInstallPath() .. '/addons/Keyring/'
-
-
-
 -- Use Lua mode for persistence
 local persistence_mode = 'lua'
 
--- Player server ID functions now handled by persistence module
+-- Handler table for API functions
+local handler = {}
 
 -- Dynamis [D] zone transition mapping
 local dynamis_zone_transitions = {
@@ -112,15 +106,10 @@ local rakaznar_zone_transitions = {
     [267] = {275, 133, 189}  -- Kamihr Drifts => Outer Ra'Kaznar [U1], [U2], [U3]
 }
 
--- Helper function to get table keys
--- table_keys function now handled by persistence module
-
--- Load state from file (now using persistence module)
+-- Load state from file (using persistence module)
 local function load_state()
     return persistence.load_state(debug_print)
 end
-
--- serialize_table function now handled by persistence module
 
 -- Initialize with empty state - will be loaded when player is ready
 local state = {
@@ -132,13 +121,24 @@ local state = {
 
 local firstLoad = false
 
--- Module loaded
-debug_print('Module loaded')
-
 -- Create a protected state accessor to prevent corruption
 local function get_state()
     if type(state) ~= 'table' then
-        debug_print('State corrupted, recreating')
+        debug_print('ERROR: State corrupted! This should not happen after persistence is loaded.')
+        debug_print('WARNING: Not auto-recreating state to prevent data loss. Loading from persistence.')
+        
+        -- Try to reload from persistence instead of creating empty state
+        if firstLoad then
+            local loaded_state = load_state()
+            if type(loaded_state) == 'table' then
+                state = loaded_state
+                debug_print('Successfully recovered state from persistence file')
+                return state
+            end
+        end
+        
+        -- Only create empty state as last resort
+        debug_print('CRITICAL: Creating empty state as last resort - data may be lost!')
         state = {
             timestamps = {},
             owned = {},
@@ -158,10 +158,40 @@ local function set_state(new_state)
     end
 end
 
--- Save state to file (now using persistence module)
+-- Save state to file (using persistence module)
 local function save_state()
     local current_state = get_state()
-    persistence.save_state(current_state, debug_print)
+    
+    -- Safety check: don't save if state appears to be empty/corrupted
+    if not current_state.timestamps or not current_state.owned then
+        debug_print('WARNING: Refusing to save potentially corrupted state (missing timestamps or owned tables)')
+        return false
+    end
+    
+    -- Additional safety: don't save if all timestamps are 0 and all owned are false (likely corrupted)
+    local has_meaningful_data = false
+    for id, timestamp in pairs(current_state.timestamps) do
+        if timestamp > 0 then
+            has_meaningful_data = true
+            break
+        end
+    end
+    
+    if not has_meaningful_data then
+        for id, owned in pairs(current_state.owned) do
+            if owned == true then
+                has_meaningful_data = true
+                break
+            end
+        end
+    end
+    
+    if not has_meaningful_data and firstLoad then
+        debug_print('WARNING: State appears to be empty - not saving to prevent data loss')
+        return false
+    end
+    
+    return persistence.save_state(current_state, debug_print)
 end
 
 -- Callback hooks
@@ -171,13 +201,12 @@ local zone_callback = nil
 -- Flag to track if we've already requested canteen data after login/reload
 local canteen_requested = false
 
+-- Flag to track if we've done the post-0x0A key item check
+local post_zone_check_done = false
 
-
---Init vars
-local mem = AshitaCore:GetMemoryManager()
-local player = mem:GetPlayer()
-
-
+-- Zone tracking variables
+local current_zone = nil
+local previous_zone = nil
 
 -- Request Storage Slip Canteen info (outgoing packet 0x115)
 local function request_currency_data()
@@ -304,12 +333,17 @@ end
 function handler.is_available(id)
     local current_state = get_state()
     if not current_state.timestamps then
-        return nil
+        return false
     end
     
     local cooldown = trackedKeyItems[id]
     local ts = current_state.timestamps[id]
-    if not cooldown then return nil end
+    
+    -- Return false if no cooldown defined or timestamp is 0/nil (never acquired)
+    if not cooldown or not ts or ts <= 0 then 
+        return false 
+    end
+    
     return os.time() >= (ts + cooldown)
 end
 
@@ -416,30 +450,42 @@ function handler.get_dynamis_d_entry_time()
     return current_state.dynamis_d_entry_time or 0
 end
 
--- API: Get hourglass timestamp (with increment logic)
-function handler.get_hourglass_time()
-    local current_state = get_state()
-    local base_hourglass_time = current_state.hourglass_time or 0
-    local increment_start_time = current_state.hourglass_increment_start_time or 0
-    
-    -- If no base hourglass time, return 0
-    if base_hourglass_time == 0 then
-        return 0
-    end
-    
-    -- If increment hasn't started, return base time
-    if increment_start_time == 0 then
-        return base_hourglass_time
-    end
-    
-    -- Calculate increment: 1 second for every 5 seconds that pass
-    local current_time = os.time()
-    local time_since_increment_start = current_time - increment_start_time
-    local increment_seconds = math.floor(time_since_increment_start / 5)  -- 1 second per 5 seconds
-    
-    -- Return base time plus increment
-    return base_hourglass_time + increment_seconds
-end
+ -- API: Get hourglass timestamp (with increment logic)
+ function handler.get_hourglass_time()
+     local current_state = get_state()
+     local base_hourglass_time = current_state.hourglass_time or 0
+     local packet_timestamp = current_state.hourglass_packet_timestamp or 0
+     local increment_start_time = current_state.hourglass_increment_start_time or 0
+     
+     -- If no base hourglass time, return 0
+     if base_hourglass_time == 0 then
+         return 0
+     end
+     
+     -- If no packet timestamp, fall back to old increment logic
+     if packet_timestamp == 0 then
+         -- If increment hasn't started, return base time
+         if increment_start_time == 0 then
+             return base_hourglass_time
+         end
+         
+         -- Calculate increment: 1 second for every 5 seconds that pass
+         local current_time = os.time()
+         local time_since_increment_start = current_time - increment_start_time
+         local increment_seconds = math.floor(time_since_increment_start / 5)  -- 1 second per 5 seconds
+         
+         -- Return base time plus increment
+         return base_hourglass_time + increment_seconds
+     end
+     
+     -- Use new formula: (current_time - packet_timestamp) / 5 + base_hourglass_time
+     local current_time = os.time()
+     local time_since_packet = current_time - packet_timestamp
+     local accumulated_seconds = math.floor(time_since_packet / 5)  -- 1 second per 5 seconds
+     
+     -- Return base hourglass time plus accumulated time
+     return base_hourglass_time + accumulated_seconds
+ end
 
 -- API: Get hourglass time remaining (24-hour cooldown)
 function handler.get_hourglass_time_remaining()
@@ -484,8 +530,6 @@ function handler.stop_hourglass_increment()
         debug_print('Hourglass increment stopped - Dynamis [D] is no longer available')
     end
 end
-
-
 
 -- API: Check if Dynamis [D] is available (cooldown expired)
 function handler.is_dynamis_d_available()
@@ -560,15 +604,17 @@ function handler.load_persistence_file()
     local loaded_state = load_state()
     
     if type(loaded_state) == 'table' then
-        -- Validate canteen generation timer - if it's too old, reset it
+        -- Validate canteen generation timer - only reset if extremely old (7 days)
         if loaded_state.last_canteen_time and loaded_state.last_canteen_time > 0 then
             local currentTime = os.time()
             local timeSinceTimerStart = currentTime - loaded_state.last_canteen_time
             
-            -- If the timer is more than 24 hours old, it's probably stale
-            if timeSinceTimerStart > 86400 then  -- 24 hours
-                debug_print('Canteen generation timer is stale, resetting')
+            -- Only reset if timer is more than 7 days old (likely corrupted data)
+            if timeSinceTimerStart > 604800 then  -- 7 days = 604800 seconds
+                debug_print('Canteen generation timer is extremely old (>7 days), resetting')
                 loaded_state.last_canteen_time = 0
+            elseif timeSinceTimerStart > 86400 then  -- 24 hours
+                debug_print('Canteen generation timer is old but keeping it (timer: ' .. timeSinceTimerStart .. ' seconds)')
             end
         end
         
@@ -581,13 +627,7 @@ function handler.load_persistence_file()
     end
 end
 
-
-
 -- PACKET HOOKS --
-
--- Improved zone change detection system using direct packet parsing
-local current_zone = nil
-local previous_zone = nil
 
 -- Consolidated packet handler for all packet types
 ashita.events.register('packet_in', 'Keyring_PacketHandler', function(e)
@@ -749,34 +789,34 @@ ashita.events.register('packet_in', 'Keyring_PacketHandler', function(e)
         -- Hourglass usage detection (0x02A) - from four different NPCs
         local current_state = get_state()
         
-            -- Extract message ID and parameters from the packet
-    local messageId = struct.unpack('H', e.data, 0x1A+1)
-    local actor_ID = struct.unpack('I', e.data, 0x04+1)  -- Actor ID (4 bytes) at offset 0x04
-    local param2 = struct.unpack('I', e.data, 0x08+1)  -- Use 'I' for 32-bit integer since Param2 is 4 bytes
-    
-    debug_print('0x02A packet received - Message ID: ' .. messageId .. ', Actor ID: ' .. actor_ID .. ', Param2: ' .. param2)
-    
-    -- Validation table: Actor ID -> Expected Message ID pairs
-    local hourglass_validation = {
-        [17772867] = 48733,
-        [17720029] = 49344,
-        [17756500] = 43686,
-        [17736063] = 49463
-    }
-    
-    -- Double validation: Check both actor_ID and messageId are valid and match
-    local expected_message_id = hourglass_validation[actor_ID]
-    if expected_message_id and messageId == expected_message_id then
-        -- This is a confirmed hourglass usage message
-        -- Store the Param2 value (hourglass time in seconds) directly and reset increment state
-        current_state.hourglass_time = param2
-        current_state.hourglass_increment_start_time = 0  -- Reset increment state when new packet arrives
-        save_state()
+        -- Extract message ID and parameters from the packet
+        local messageId = struct.unpack('H', e.data, 0x1A+1)
+        local actor_ID = struct.unpack('I', e.data, 0x04+1)  -- Actor ID (4 bytes) at offset 0x04
+        local param2 = struct.unpack('I', e.data, 0x08+1)  -- Use 'I' for 32-bit integer since Param2 is 4 bytes
         
-        debug_print('Hourglass time detected via 0x02A packet - Actor ID: ' .. actor_ID .. ', Message ID: ' .. messageId .. ', Hourglass Time: ' .. param2 .. ' seconds')
-        print(chat.header('Keyring'):append(chat.message('Empty Hourglass used - 24-hour cooldown started')))
-        return
-    end
+        debug_print('0x02A packet received - Message ID: ' .. messageId .. ', Actor ID: ' .. actor_ID .. ', Param2: ' .. param2)
+        
+        -- Validation table: Actor ID -> Expected Message ID pairs
+        local hourglass_validation = {
+            [17772867] = 48733,
+            [17720029] = 49344,
+            [17756500] = 43686,
+            [17736063] = 49463
+        }
+        
+                 -- Double validation: Check both actor_ID and messageId are valid and match
+         local expected_message_id = hourglass_validation[actor_ID]
+         if expected_message_id and messageId == expected_message_id then
+             -- This is a confirmed hourglass usage message
+             local now = os.time()
+             -- Store the Param2 value (hourglass time in seconds) and the timestamp when it was received
+             current_state.hourglass_time = param2
+             current_state.hourglass_packet_timestamp = now  -- Store timestamp when packet was received
+             current_state.hourglass_increment_start_time = 0  -- Reset increment state when new packet arrives
+             save_state()
+             
+             debug_print('Hourglass time detected via 0x02A packet - Actor ID: ' .. actor_ID .. ', Message ID: ' .. messageId .. ', Hourglass Time: ' .. param2 .. ' seconds, Timestamp: ' .. now)             return
+         end
         
         -- Log other 0x02A packets for debugging (throttled to prevent spam)
         debug_print('0x02A packet not recognized as hourglass - Message ID: ' .. messageId .. ', Param2: ' .. param2, 5.0)
@@ -928,8 +968,5 @@ function handler.set_debug_throttle_intervals(default_interval, render_interval)
     end
     debug_print("Debug throttle intervals updated - default: " .. debug_throttle.default_interval .. "s, render: " .. debug_throttle.render_interval .. "s")
 end
-
--- Flag to track if we've done the post-0x0A key item check
-local post_zone_check_done = false
 
 return handler

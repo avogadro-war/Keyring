@@ -1,33 +1,37 @@
 # Keyring - Final Fantasy XI Key Item Cooldown Tracker
 
-A Final Fantasy XI addon for Ashita4 that tracks key items with cooldown timers, providing real-time status updates and notifications.
+A Final Fantasy XI addon for Ashita4 that tracks key items with cooldown timers, providing real-time status updates and individual item notifications.
 
 ## Features
 
 - **Automatic Detection**: Automatically detects when key items are acquired via packet interception
 - **Real-time Tracking**: Live countdown timers for key item cooldowns
-- **Smart Notifications**: Zone change notifications for available items you don't currently have
+- **Individual Notifications**: Each item gets specific callouts instead of general messages
+- **Zone Change Alerts**: Individual "ready for pickup" notifications when zoning
 - **Special Canteen Tracking**: Advanced tracking for Mystical Canteen with storage system (1/3, 2/3, 3/3)
 - **Dynamis [D] Tracking**: Automatic detection of Dynamis [D] zone entries with 60-hour cooldown tracking
+- **Empty Hourglass Tracking**: Automatic detection via NPC interactions with 24-hour cooldown
+- **Manual Fix Command**: Recover from missed packets with manual acquisition triggers
 - **Persistent State**: Remembers timestamps across game sessions
 - **Modern GUI**: Clean, responsive interface with dynamic sizing
-- **Unknown Status**: Shows "Unknown" for items that haven't been acquired yet
+- **Toggleable Notifications**: Full control over zone change notifications
 
 ## Tracked Items
 
 The addon currently tracks these items with their respective cooldowns:
 
 ### Key Items
-- **Moglophone** (20h cooldown)
-- **Mystical Canteen** (20h cooldown) - with special storage tracking
-- **Shiny Rakaznar Plate** (20h cooldown)
+- **Moglophone** (20h cooldown) - Cooldown starts when acquired
+- **Mystical Canteen** (20h generation cycle) - Storage-based tracking (up to 3 canteens)
+- **Shiny Rakaznar Plate** (20h cooldown) - Cooldown starts when used for teleport
 
-### Dynamis [D] Entry Cooldown
-- **Dynamis [D] Entry** (60h cooldown) - automatically detected when entering Dynamis [D] zones from:
+### Special Cooldowns
+- **Dynamis [D] Entry** (60h cooldown) - Auto-detected when entering Dynamis [D] zones:
   - Southern San d'Oria (230) → Dynamis-San d'Oria [D] (294)
   - Bastok Mines (234) → Dynamis-Bastok [D] (295)
   - Windurst Walls (239) → Dynamis-Windurst [D] (296)
   - Ru'Lude Gardens (243) → Dynamis-Jeuno [D] (297)
+- **Empty Hourglass** (24h cooldown) - Auto-detected via NPC interactions
 
 ## Installation
 
@@ -46,10 +50,17 @@ The addon currently tracks these items with their respective cooldowns:
 | Command | Description |
 |---------|-------------|
 | `/keyring` or `/keyring gui` | Toggle the GUI window |
+| `/keyring check` | Check for available key items (individual callouts) |
+| `/keyring fix <item>` | Manually trigger acquisition for missed packets |
+| `/keyring notify` | Toggle zone change notifications (default: on) |
+| `/keyring status` | Show addon status and cooldown information |
 | `/keyring debug` | Toggle debug messages in chat |
-| `/keyring check` | Manually check for available key items |
-| `/keyring notify` | Toggle zone change notifications |
-| `/keyring help` | Show detailed help information |
+| `/keyring help` | Show comprehensive help information |
+
+### Fix Command Examples
+- `/keyring fix moglophone` or `/keyring fix mog`
+- `/keyring fix canteen` or `/keyring fix mystical`
+- `/keyring fix plate` or `/keyring fix rakaznar`
 
 ## GUI Interface
 
@@ -79,8 +90,21 @@ The addon provides a clean, responsive GUI with two main sections:
 ### Automatic Detection
 The addon intercepts network packets to detect when key items are acquired, automatically recording timestamps for accurate cooldown tracking.
 
-### Zone Change Notifications
-When you zone into a new area, the addon checks if any tracked key items are available for pickup (off cooldown and not currently in your inventory) and notifies you automatically.
+### Individual Notifications System
+The addon provides specific, individual notifications for each key item:
+
+#### Acquisition Notifications (Always On)
+- "Moglophone acquired - 20-hour cooldown started"
+- "Acquired Shiny Rakaznar Plate - cooldown will start when used"
+- "Shiny Rakaznar Plate used - 20-hour cooldown started"
+
+#### Zone Change Notifications (Toggleable)
+When you zone into a new area, individual "ready for pickup" alerts:
+- "Moglophone is ready for pickup"
+- "Mystical Canteen is ready for pickup"
+- "Shiny Rakaznar Plate is ready for pickup"
+
+**No general notifications** - each item gets its own specific callout instead of grouped messages.
 
 ### Special Canteen Handling
 The Mystical Canteen has a unique storage system where you can hold up to 3 canteens. The addon tracks this storage count and displays it alongside the availability status.
@@ -130,7 +154,16 @@ If you encounter a settings module error on first load, the addon will automatic
 Enable debug mode with `/keyring debug` to see detailed packet information and troubleshooting messages.
 
 ### Manual State Reset
-If tracking becomes inaccurate, you can reset the addon by:
+If tracking becomes inaccurate, you can:
+
+#### Fix Individual Items
+Use the fix command to manually trigger acquisition for missed packets:
+- `/keyring fix moglophone` - If the addon missed your Moglophone acquisition
+- `/keyring fix canteen` - If canteen tracking is out of sync
+- `/keyring fix plate` - If Rakaznar Plate cooldown wasn't detected
+
+#### Complete Reset
+For complete reset:
 1. Unloading the addon: `/addon unload keyring`
 2. Deleting the character-specific settings file: `data/keyring_settings_[YourCharacterName].lua`
 3. Reloading the addon: `/addon load keyring`
@@ -162,6 +195,16 @@ The addon has been optimized for performance and maintainability:
 - **Settings Management**: Unified Lua-based settings system
 
 ## Version History
+
+- **v0.3.2**: Individual notifications and manual fix functionality
+  - **Individual item notifications**: Replaced general "One or more items available" with specific per-item callouts
+  - **Zone change individual alerts**: Each available item now gets its own "ready for pickup" notification
+  - **Manual fix command**: Added `/keyring fix <item>` to manually trigger acquisition for missed packets
+  - **Enhanced help system**: Comprehensive help with organized sections for commands, notifications, and features
+  - **Improved notification control**: Cleaner distinction between always-on acquisition alerts and toggleable zone notifications
+  - **Better user experience**: No more grouped notifications - each item gets specific, actionable feedback
+  - **Flexible item name matching**: Fix command accepts partial names (e.g., "mog", "canteen", "plate")
+  - **Enhanced command documentation**: Updated README and help with detailed examples and usage instructions
 
 - **v0.3.1**: Performance improvements and character identification fixes
   - **Fixed player identification**: Replaced unreliable player name retrieval with server ID-based character identification

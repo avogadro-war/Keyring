@@ -70,7 +70,8 @@ function persistence.load_state(debug_print)
         last_canteen_time = 0,
         dynamis_d_entry_time = 0,  -- Timestamp of last Dynamis [D] entry
         hourglass_time = 0,  -- Timestamp of last hourglass use
-        hourglass_increment_start_time = 0  -- Timestamp when hourglass increment started (when Dynamis becomes available)
+        hourglass_increment_start_time = 0,  -- Timestamp when hourglass increment started (when Dynamis becomes available)
+        hourglass_packet_timestamp = 0  -- Timestamp when hourglass time was received from 0x02A packet
     }
     
     -- Get addon path for absolute file paths
@@ -99,128 +100,153 @@ function persistence.load_state(debug_print)
         local content = file:read('*all')
         file:close()
         
-        if debug_print then debug_print('File content loaded, length: ' .. #content) end
-        
-        -- Try to execute the Lua code safely
-        local env = {}
-        local chunk, compile_error = load(content, settings_file, 't', env)
-        if chunk then
-            local success, result = pcall(chunk)
-            if success then
-                if type(result) == 'table' then
-                    if result.timestamps and result.owned and 
-                       type(result.timestamps) == 'table' and type(result.owned) == 'table' then
-                        if debug_print then debug_print('State loaded successfully') end
-                        if debug_print then debug_print('Loaded timestamps: ' .. table_keys(result.timestamps)) end
-                        if debug_print then debug_print('Loaded owned: ' .. table_keys(result.owned)) end
-                        return result
-                    else
-                        if debug_print then debug_print('Invalid state structure in returned table') end
-                    end
-                elseif env.state and type(env.state) == 'table' then
-                    if env.state.timestamps and env.state.owned and 
-                       type(env.state.timestamps) == 'table' and type(env.state.owned) == 'table' then
-                        if debug_print then debug_print('State loaded successfully') end
-                        return env.state
-                    else
-                        if debug_print then debug_print('Invalid state structure in env.state') end
-                    end
-                else
-                    if debug_print then debug_print('No valid state found in loaded file') end
-                end
+        -- Try to execute the file content as Lua code
+        local success, result = pcall(function()
+            local chunk = loadstring(content)
+            if chunk then
+                return chunk()
             else
-                if debug_print then debug_print('Error executing loaded content: ' .. tostring(result)) end
+                return nil
             end
+        end)
+        
+        if success and result and type(result) == 'table' then
+            if debug_print then debug_print('Successfully loaded persistence file') end
+            
+            -- Merge with default state to ensure all required fields exist
+            local merged_state = {}
+            for k, v in pairs(default_state) do
+                merged_state[k] = result[k] or v
+            end
+            
+            -- Validate and clean up the loaded state
+            if not merged_state.timestamps or type(merged_state.timestamps) ~= 'table' then
+                merged_state.timestamps = {}
+            end
+            
+            if not merged_state.owned or type(merged_state.owned) ~= 'table' then
+                merged_state.owned = {}
+            end
+            
+            -- Ensure numeric fields are numbers
+            merged_state.storage_canteens = tonumber(merged_state.storage_canteens) or 0
+            merged_state.last_canteen_time = tonumber(merged_state.last_canteen_time) or 0
+            merged_state.dynamis_d_entry_time = tonumber(merged_state.dynamis_d_entry_time) or 0
+            merged_state.hourglass_time = tonumber(merged_state.hourglass_time) or 0
+            merged_state.hourglass_increment_start_time = tonumber(merged_state.hourglass_increment_start_time) or 0
+            merged_state.hourglass_packet_timestamp = tonumber(merged_state.hourglass_packet_timestamp) or 0
+            
+            if debug_print then 
+                debug_print('Loaded state keys: ' .. table_keys(merged_state))
+                debug_print('Timestamps count: ' .. (merged_state.timestamps and #merged_state.timestamps or 0))
+                debug_print('Owned count: ' .. (merged_state.owned and #merged_state.owned or 0))
+            end
+            
+            return merged_state
         else
-            if debug_print then debug_print('Error compiling loaded content: ' .. tostring(compile_error)) end
+            if debug_print then debug_print('Failed to parse persistence file: ' .. tostring(err or 'unknown error')) end
         end
     else
-        if debug_print then debug_print('Could not open file: ' .. tostring(err)) end
+        if debug_print then debug_print('Could not open persistence file: ' .. tostring(err)) end
     end
     
+    -- Return default state if loading failed
     if debug_print then debug_print('Using default state') end
     return default_state
 end
 
 -- Save state to character-specific persistence file
-function persistence.save_state(current_state, debug_print)
-    if debug_print then debug_print('Saving state') end
+function persistence.save_state(state, debug_print)
+    if not state or type(state) ~= 'table' then
+        if debug_print then debug_print('Invalid state provided for saving') end
+        return false
+    end
     
     -- Get addon path for absolute file paths
     local addon_path = AshitaCore:GetInstallPath() .. '/addons/Keyring/'
+    
+    -- Ensure data directory exists
+    local data_dir = addon_path .. 'data/'
+    local data_dir_exists = io.open(data_dir, 'r')
+    if not data_dir_exists then
+        -- Try to create the data directory
+        os.execute('mkdir "' .. data_dir .. '"')
+        if debug_print then debug_print('Created data directory: ' .. data_dir) end
+    else
+        data_dir_exists:close()
+    end
     
     -- Get player server ID for character-specific file
     local playerServerId = get_player_server_id()
     if debug_print then debug_print('Player server ID for saving: ' .. tostring(playerServerId)) end
     
-    -- Only use character-specific file if we have a valid player server ID
+    -- Use character-specific file if we have a valid player server ID
     local settings_file
     if playerServerId then
-        settings_file = addon_path .. 'data/keyring_settings_' .. playerServerId .. '.lua'
+        settings_file = data_dir .. 'keyring_settings_' .. playerServerId .. '.lua'
         if debug_print then debug_print('Using character-specific settings file: ' .. settings_file) end
     else
-        settings_file = addon_path .. 'data/keyring_settings.lua'
+        settings_file = data_dir .. 'keyring_settings.lua'
         if debug_print then debug_print('Player server ID not available, using generic settings file: ' .. settings_file) end
     end
     
-    -- Prepare the content to write
-    local characterId = playerServerId or 'unknown'
-    local content = string.format([[-- Keyring Addon State File
--- Generated automatically - do not edit manually
--- Character Server ID: %s
-
-local state = {
-    timestamps = %s,
-    owned = %s,
-    storage_canteens = %d,
-    last_canteen_time = %d,
-    dynamis_d_entry_time = %d
-}
-
-return state]], 
-            characterId,
-            serialize_table(current_state.timestamps or {}),
-            serialize_table(current_state.owned or {}),
-            current_state.storage_canteens or 0,
-            current_state.last_canteen_time or 0,
-            current_state.dynamis_d_entry_time or 0
-        )
+    -- Prepare the state for serialization
+    local state_to_save = {
+        timestamps = state.timestamps or {},
+        owned = state.owned or {},
+        storage_canteens = tonumber(state.storage_canteens) or 0,
+        last_canteen_time = tonumber(state.last_canteen_time) or 0,
+        dynamis_d_entry_time = tonumber(state.dynamis_d_entry_time) or 0,
+        hourglass_time = tonumber(state.hourglass_time) or 0,
+        hourglass_increment_start_time = tonumber(state.hourglass_increment_start_time) or 0,
+        hourglass_packet_timestamp = tonumber(state.hourglass_packet_timestamp) or 0
+    }
     
-    -- Ensure data directory exists (without using os.execute)
-    local dir = string.match(settings_file, '(.+)/[^/]*$')
-    if dir then
-        -- Try to create directory using Lua file operations instead of os.execute
-        local test_file = dir .. '/test_write.tmp'
-        local test_handle = io.open(test_file, 'w')
-        if test_handle then
-            test_handle:close()
-            os.remove(test_file)  -- Clean up test file
-        else
-            if debug_print then debug_print('Warning: Could not write to directory: ' .. dir) end
-        end
+    -- Create the file content
+    local file_content = '-- Keyring Settings File\n'
+    file_content = file_content .. '-- Generated automatically by Keyring addon\n'
+    file_content = file_content .. '-- Do not edit manually\n\n'
+    file_content = file_content .. 'return {\n'
+    
+    -- Add timestamps
+    file_content = file_content .. '    timestamps = {\n'
+    for id, timestamp in pairs(state_to_save.timestamps) do
+        file_content = file_content .. '        [' .. tostring(id) .. '] = ' .. tostring(timestamp) .. ',\n'
     end
+    file_content = file_content .. '    },\n'
+    
+    -- Add owned status
+    file_content = file_content .. '    owned = {\n'
+    for id, owned in pairs(state_to_save.owned) do
+        file_content = file_content .. '        [' .. tostring(id) .. '] = ' .. tostring(owned) .. ',\n'
+    end
+    file_content = file_content .. '    },\n'
+    
+    -- Add other fields
+    file_content = file_content .. '    storage_canteens = ' .. tostring(state_to_save.storage_canteens) .. ',\n'
+    file_content = file_content .. '    last_canteen_time = ' .. tostring(state_to_save.last_canteen_time) .. ',\n'
+    file_content = file_content .. '    dynamis_d_entry_time = ' .. tostring(state_to_save.dynamis_d_entry_time) .. ',\n'
+    file_content = file_content .. '    hourglass_time = ' .. tostring(state_to_save.hourglass_time) .. ',\n'
+    file_content = file_content .. '    hourglass_increment_start_time = ' .. tostring(state_to_save.hourglass_increment_start_time) .. ',\n'
+    file_content = file_content .. '    hourglass_packet_timestamp = ' .. tostring(state_to_save.hourglass_packet_timestamp) .. ',\n'
+    file_content = file_content .. '}\n'
     
     -- Write to file
     local file, err = io.open(settings_file, 'w')
     if file then
-        file:write(content)
+        file:write(file_content)
         file:close()
-        if debug_print then debug_print('State saved to: ' .. settings_file) end
+        
+        if debug_print then 
+            debug_print('Successfully saved persistence file: ' .. settings_file)
+            debug_print('Saved state keys: ' .. table_keys(state_to_save))
+        end
+        
         return true
     else
-        if debug_print then debug_print('Error saving state: ' .. tostring(err)) end
+        if debug_print then debug_print('Failed to save persistence file: ' .. tostring(err)) end
         return false
     end
-end
-
--- Get player server ID (public API)
-function persistence.get_player_server_id()
-    return get_player_server_id()
-end
-
--- Clear cached player server ID (for testing/reloading)
-function persistence.clear_player_cache()
-    cached_player_server_id = nil
 end
 
 return persistence
