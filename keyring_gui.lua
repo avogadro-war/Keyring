@@ -17,7 +17,20 @@ local PADDING = 35
 local MIN_HEIGHT = 100
 local MIN_WIDTH = 450
 local MAX_WIDTH = 1200
-local BASE_WIDTH = 500
+local BASE_WIDTH = 400
+
+-- Object pool for color tables to reduce garbage collection
+local color_pool = {
+    red = {1, 0.2, 0.2, 1},
+    green = {0, 1, 0, 1},
+    gray = {0.7, 0.7, 0.7, 1},
+    white = {1, 1, 1, 1},
+    bright_green = {0.2, 1, 0.2, 1},
+    soft_gray = {0.6, 0.6, 0.6, 1}
+}
+
+-- Reusable table for calculations to avoid creating new tables
+local calc_buffer = {}
 
 function gui.is_visible()
     return showGui[1]
@@ -32,8 +45,20 @@ function gui.set_visible(visible)
     showGui[1] = visible
 end
 
+-- Cache for window dimensions to prevent unnecessary recalculations
+local window_dimension_cache = {}
+local last_dimension_update = 0
+local DIMENSION_CACHE_DURATION = 1.0 -- Cache dimensions for 1 second
+
 -- Calculate dynamic window dimensions based on content
 local function calculate_window_dimensions(keyItemStatuses)
+    local current_time = os.clock()
+    
+    -- Check cache first
+    if window_dimension_cache.result and (current_time - last_dimension_update) < DIMENSION_CACHE_DURATION then
+        return window_dimension_cache.result.width, window_dimension_cache.result.height
+    end
+    
     local itemCount = #keyItemStatuses
     
     -- Calculate height for key items section
@@ -52,22 +77,22 @@ local function calculate_window_dimensions(keyItemStatuses)
                                 dynamisSpacing + dynamisSeparatorHeight + 
                                 dynamisPadding + dynamisBottomPadding
     
-    -- Calculate height for Hourglass section (similar to Dynamis)
-    local hourglassHeaderHeight = 20    -- "Empty Hourglass Time" text
-    local hourglassStatusHeight = 18    -- Status line
-    local hourglassSpacing = 4          -- Reduced spacing between elements
-    local hourglassSeparatorHeight = 8  -- Separator line
-    local hourglassPadding = 8          -- Reduced padding for auto-scaling safety
-    local hourglassBottomPadding = 5    -- Reduced padding below the row
-    
-    local hourglassSectionHeight = hourglassHeaderHeight + hourglassStatusHeight + 
-                                  hourglassSpacing + hourglassSeparatorHeight + 
-                                  hourglassPadding + hourglassBottomPadding
-    
-    -- Total height calculation with minimal padding
-    local totalContentHeight = keyItemsHeight + dynamisSectionHeight + hourglassSectionHeight
-    local requiredHeight = math.max(totalContentHeight + PADDING + 5, MIN_HEIGHT)  -- Reduced from 20px to 5px safety margin
-    
+         -- Calculate height for Hourglass section (similar to Dynamis)
+     local hourglassHeaderHeight = 20    -- "Empty Hourglass" text
+     local hourglassStatusHeight = 18    -- Status line (single line for most cases)
+     local hourglassSpacing = 4          -- Reduced spacing between elements
+     local hourglassSeparatorHeight = 8  -- Separator line
+     local hourglassPadding = 8          -- Reduced padding for auto-scaling safety
+     local hourglassBottomPadding = 5    -- Reduced padding below the row
+     
+     local hourglassSectionHeight = hourglassHeaderHeight + hourglassStatusHeight + 
+                                   hourglassSpacing + hourglassSeparatorHeight + 
+                                   hourglassPadding + hourglassBottomPadding
+     
+         -- Total height calculation with minimal padding
+     local totalContentHeight = keyItemsHeight + dynamisSectionHeight + hourglassSectionHeight
+     local requiredHeight = math.max(totalContentHeight + 5, MIN_HEIGHT)  -- 5px padding
+     
     -- Calculate width based on longest item name
     local maxNameLength = 0
     for _, item in ipairs(keyItemStatuses) do
@@ -76,7 +101,11 @@ local function calculate_window_dimensions(keyItemStatuses)
         end
     end
     
-    local dynamicWidth = math.min(math.max(BASE_WIDTH + (maxNameLength * 6), MIN_WIDTH), MAX_WIDTH)
+         local dynamicWidth = math.min(math.max(BASE_WIDTH + (maxNameLength * 5), MIN_WIDTH), MAX_WIDTH)
+     
+    -- Cache the result
+    window_dimension_cache.result = {width = dynamicWidth, height = requiredHeight}
+    last_dimension_update = current_time
     
     return dynamicWidth, requiredHeight
 end
@@ -95,15 +124,15 @@ end
 local function render_headers(total_width)
     imgui.Columns(3, 'cooldownColumns', true)
     
-    -- Responsive column widths with minimum sizes
-    local minNameWidth = 180
-    local minStatusWidth = 70
-    local minTimeWidth = 140
-    
-    local nameWidth = math.max(total_width * 0.50, minNameWidth)
-    local statusWidth = math.max(total_width * 0.20, minStatusWidth)
-    local timeWidth = math.max(total_width * 0.30, minTimeWidth)
-    
+         -- Responsive column widths with minimum sizes
+     local minNameWidth = 180
+     local minStatusWidth = 70
+     local minTimeWidth = 140
+     
+     local nameWidth = math.max(total_width * 0.48, minNameWidth)
+     local statusWidth = math.max(total_width * 0.15, minStatusWidth)
+     local timeWidth = math.max(total_width * 0.37, minTimeWidth)
+     
     imgui.SetColumnWidth(0, nameWidth)      -- Key Item
     imgui.SetColumnWidth(1, statusWidth)    -- Have?
     imgui.SetColumnWidth(2, timeWidth)      -- Time Remaining
@@ -118,10 +147,40 @@ local function render_headers(total_width)
     imgui.Separator()
 end
 
+-- Time formatting cache to avoid repeated calculations
+local time_format_cache = {}
+local last_cache_cleanup = 0
+
+-- Helper function to format time with caching
+local function format_time_cached(seconds)
+    if seconds <= 0 then return 'Ready.' end
+    
+    local cache_key = math.floor(seconds / 60) -- Cache by minute to reduce cache size
+    local cached = time_format_cache[cache_key]
+    if cached then
+        return cached
+    end
+    
+    local rh = math.floor(seconds / 3600)
+    local rm = math.floor((seconds % 3600) / 60)
+    local rs = seconds % 60
+    local formatted = string.format('%02dh:%02dm:%02ds', rh, rm, rs)
+    
+    -- Clean cache every 5 minutes to prevent memory bloat
+    local current_time = os.time()
+    if current_time - last_cache_cleanup > 300 then
+        time_format_cache = {}
+        last_cache_cleanup = current_time
+    end
+    
+    time_format_cache[cache_key] = formatted
+    return formatted
+end
+
 -- Render time remaining with special canteen handling
 local function render_time_remaining(item, hasItem, storage_canteens, packet_tracker)
     local displayText
-    local textColor = {1, 0.2, 0.2, 1} -- red default
+    local textColor = color_pool.red -- Use pooled color
     local show_canteen_count = (item.id == 3137)
     
     if show_canteen_count then
@@ -268,109 +327,93 @@ end
 
 -- Render Dynamis [D] cooldown section
 local function render_dynamis_d_section(packet_tracker, total_width)
-    -- Add row separator above Dynamis section
-    imgui.PushStyleColor(3, {0.3, 0.3, 0.3, 0.8})  -- Separator color
-    imgui.Separator()
-    imgui.PopStyleColor()
-    
     -- Add spacing for visual separation
     imgui.Spacing()
     imgui.Spacing()
     
-    -- Set up 2 columns for Dynamis [D] section (no separator between columns)
-    imgui.Columns(2, 'dynamisColumns', false)
+         -- Set up 3 columns for Dynamis [D] section (no separator between columns)
+     imgui.Columns(3, 'dynamisColumns', false)
+     
+     -- Fixed column widths for better layout
+     local labelWidth = total_width * 0.35  -- Left column for labels (increased to prevent clipping)
+     local statusWidth = total_width * 0.35  -- Center column for status
+     local timeWidth = total_width * 0.30   -- Right column for time values
+     
+    imgui.SetColumnWidth(0, labelWidth)      -- Label (left justified)
+    imgui.SetColumnWidth(1, statusWidth)     -- Status (centered)
+    imgui.SetColumnWidth(2, timeWidth)       -- Time (right justified)
     
-    -- Fixed column widths for better layout
-    local labelWidth = total_width * 0.55  -- Narrower for label
-    local statusWidth = total_width * 0.45  -- Wider for status text
-    
-    imgui.SetColumnWidth(0, labelWidth)      -- Label
-    imgui.SetColumnWidth(1, statusWidth)     -- Status
-    
-    -- Section header (left column) - centered
+    -- Section header (left column) - left justified
     local headerText = 'Dynamis [D] Entry'
-    local col_start = imgui.GetColumnOffset()
-    local col_width = imgui.GetColumnWidth()
-    local text_width = imgui.CalcTextSize(headerText)
-    local pos_x = col_start + (col_width - text_width) / 2
-    imgui.SetCursorPosX(pos_x)
-    imgui.PushStyleColor(0, {1, 1, 1, 1})  -- Text color (white)
-    imgui.Text(headerText)
-    imgui.PopStyleColor()
+    imgui.Text(headerText)  -- Left justified
     imgui.NextColumn()
     
     -- Get cooldown status
     local remaining = packet_tracker.get_dynamis_d_cooldown_remaining()
     local entry_time = packet_tracker.get_dynamis_d_entry_time()
     
-    -- Check Dynamis availability and manage hourglass increment
+    -- Check Dynamis availability (no longer managing hourglass increment)
     local is_dynamis_available = (remaining == nil or remaining <= 0)
-    if is_dynamis_available then
-        -- Dynamis is available - start hourglass increment if not already started
-        packet_tracker.start_hourglass_increment()
-    else
-        -- Dynamis is on cooldown - stop hourglass increment if it was running
-        packet_tracker.stop_hourglass_increment()
-    end
     
-    -- Status display (right column) with improved formatting
-    if entry_time == 0 or entry_time == nil then
-        -- No entry recorded
-        local display_text = 'Unknown'
-        local text_color = {0.6, 0.6, 0.6, 1} -- Softer gray
-        
-        -- Center the status text in the column
-        local col_start = imgui.GetColumnOffset()
-        local col_width = imgui.GetColumnWidth()
-        local text_width = imgui.CalcTextSize(display_text)
-        local pos_x = col_start + (col_width - text_width) / 2
-        imgui.SetCursorPosX(pos_x)
-        imgui.TextColored(text_color, display_text)
-        
-    elseif remaining and remaining > 0 then
-        -- On cooldown - show time remaining with improved formatting
-        local hours = math.floor(remaining / 3600)
-        local minutes = math.floor((remaining % 3600) / 60)
-        local seconds = remaining % 60
-        local timeText = string.format('%02d:%02d:%02d', hours, minutes, seconds)
-        
-        -- Calculate positioning for multi-colored text
-        local col_start = imgui.GetColumnOffset()
-        local col_width = imgui.GetColumnWidth()
-        
-        -- Calculate total width of all text parts
-        local onCooldownWidth = imgui.CalcTextSize('On Cooldown')
-        local colonWidth = imgui.CalcTextSize(': [')
-        local timeWidth = imgui.CalcTextSize(timeText)
-        local bracketWidth = imgui.CalcTextSize(']')
-        local totalWidth = onCooldownWidth + colonWidth + timeWidth + bracketWidth
-        
-        -- Center the entire text block
-        local pos_x = col_start + (col_width - totalWidth) / 2
-        imgui.SetCursorPosX(pos_x)
-        
-        -- Render multi-colored text: "On Cooldown: [time]"
-        imgui.TextColored({1, 0.2, 0.2, 1}, 'On Cooldown')  -- Red text
-        imgui.SameLine()
-        imgui.TextColored({1, 1, 1, 1}, ': [')  -- White text
-        imgui.SameLine()
-        imgui.TextColored({1, 0.2, 0.2, 1}, timeText)  -- Red text
-        imgui.SameLine()
-        imgui.TextColored({1, 1, 1, 1}, ']')  -- White text
-        
-    else
-        -- Available
-        local display_text = 'Ready'
-        local text_color = {0.2, 1, 0.2, 1} -- Brighter green
-        
-        -- Center the status text in the column
-        local col_start = imgui.GetColumnOffset()
-        local col_width = imgui.GetColumnWidth()
-        local text_width = imgui.CalcTextSize(display_text)
-        local pos_x = col_start + (col_width - text_width) / 2
-        imgui.SetCursorPosX(pos_x)
-        imgui.TextColored(text_color, display_text)
-    end
+         -- Status display - centered across entire window
+     if entry_time == 0 or entry_time == nil then
+         -- No entry recorded
+         local display_text = 'Unknown'
+         local text_color = {0.6, 0.6, 0.6, 1} -- Softer gray
+         
+         -- Center the status text across the entire window
+         local text_width = imgui.CalcTextSize(display_text)
+         local pos_x = (total_width - text_width) / 2
+         imgui.SetCursorPosX(pos_x)
+         imgui.TextColored(text_color, display_text)
+         
+     elseif remaining and remaining > 0 then
+         -- On cooldown - show status only (time goes in right column)
+         local display_text = 'On cooldown.'
+         local text_color = {1, 0.2, 0.2, 1} -- Red text
+         
+         -- Center the status text across the entire window
+         local text_width = imgui.CalcTextSize(display_text)
+         local pos_x = (total_width - text_width) / 2
+         imgui.SetCursorPosX(pos_x)
+         imgui.TextColored(text_color, display_text)
+         
+     else
+         -- Available
+         local display_text = 'Ready'
+         local text_color = {0.2, 1, 0.2, 1} -- Brighter green
+         
+         -- Center the status text across the entire window
+         local text_width = imgui.CalcTextSize(display_text)
+         local pos_x = (total_width - text_width) / 2
+         imgui.SetCursorPosX(pos_x)
+         imgui.TextColored(text_color, display_text)
+     end
+     
+     imgui.NextColumn()
+     
+     -- Time display (right column) - right justified
+     if entry_time == 0 or entry_time == nil then
+         -- No entry recorded - no time to display
+         imgui.Text('')
+     elseif remaining and remaining > 0 then
+         -- On cooldown - show time remaining
+         local hours = math.floor(remaining / 3600)
+         local minutes = math.floor((remaining % 3600) / 60)
+         local seconds = remaining % 60
+                   local timeText = string.format('%02dh:%02dm:%02ds', hours, minutes, seconds)
+         
+         -- Right justify the time text
+         local col_start = imgui.GetColumnOffset()
+         local col_width = imgui.GetColumnWidth()
+         local text_width = imgui.CalcTextSize(timeText)
+         local pos_x = col_start + col_width - text_width
+         imgui.SetCursorPosX(pos_x)
+         imgui.TextColored({1, 1, 1, 1}, timeText)  -- White text
+     else
+         -- Available - no time to display
+         imgui.Text('')
+     end
     
     -- Enhanced tooltip with more detailed info
     if imgui.IsItemHovered() then
@@ -387,18 +430,12 @@ local function render_dynamis_d_section(packet_tracker, total_width)
             imgui.Text('• Last entry: ' .. entryDate)
         end
         imgui.EndTooltip()
-    end
-    
-    imgui.NextColumn()
-    
-    -- Add spacing at the bottom
-    imgui.Spacing()
-    imgui.Spacing()
-    
-    -- Add row separator below Dynamis section
-    imgui.PushStyleColor(3, {0.3, 0.3, 0.3, 0.8})  -- Separator color
-    imgui.Separator()
-    imgui.PopStyleColor()
+         end
+     
+     imgui.NextColumn()
+     
+           -- Minimal spacing at the bottom
+      imgui.Spacing()
 end
 
 -- Render Hourglass cooldown section
@@ -407,27 +444,26 @@ local function render_hourglass_section(packet_tracker, total_width)
     imgui.Spacing()
     imgui.Spacing()
     
-    -- Set up 2 columns for Hourglass section (no separator between columns)
-    imgui.Columns(2, 'hourglassColumns', false)
+         -- Set up 3 columns for Hourglass section (no separator between columns)
+     imgui.Columns(3, 'hourglassColumns', false)
+     
+     -- Fixed column widths for better layout
+     local labelWidth = total_width * 0.35  -- Left column for labels (increased to prevent clipping)
+     local statusWidth = total_width * 0.35  -- Center column for status
+     local timeWidth = total_width * 0.30   -- Right column for time values
+     
+    imgui.SetColumnWidth(0, labelWidth)      -- Label (left justified)
+    imgui.SetColumnWidth(1, statusWidth)     -- Status (centered)
+    imgui.SetColumnWidth(2, timeWidth)       -- Time (right justified)
     
-    -- Fixed column widths for better layout
-    local labelWidth = total_width * 0.55  -- Narrower for label
-    local statusWidth = total_width * 0.45  -- Wider for status text
-    
-    imgui.SetColumnWidth(0, labelWidth)      -- Label
-    imgui.SetColumnWidth(1, statusWidth)     -- Status
-    
-    -- Section header (left column) - centered
-    local headerText = 'Empty Hourglass Time'
-    local col_start = imgui.GetColumnOffset()
-    local col_width = imgui.GetColumnWidth()
-    local text_width = imgui.CalcTextSize(headerText)
-    local pos_x = col_start + (col_width - text_width) / 2
-    imgui.SetCursorPosX(pos_x)
-    imgui.PushStyleColor(0, {1, 1, 1, 1})  -- Text color (white)
-    imgui.Text(headerText)
-    imgui.PopStyleColor()
-    imgui.NextColumn()
+         -- Section header (left column) - left justified
+     local headerText = 'Empty Hourglass'
+     imgui.Text(headerText)  -- Left justified
+     imgui.NextColumn()
+     
+     -- Add spacing to match Dynamis vertical alignment
+     imgui.Spacing()
+     imgui.Spacing()
     
     -- Get hourglass status
     local hourglass_remaining = packet_tracker.get_hourglass_time_remaining()
@@ -435,115 +471,102 @@ local function render_hourglass_section(packet_tracker, total_width)
     local dynamis_remaining = packet_tracker.get_dynamis_d_cooldown_remaining()
     local is_dynamis_available = (dynamis_remaining == nil or dynamis_remaining <= 0)
     
-    -- Status display (right column) with conditional coloring
-    if hourglass_time == 0 or hourglass_time == nil then
-        -- No hourglass use recorded
-        local text_color = {0.6, 0.6, 0.6, 1} -- Softer gray
-        
-        -- Center the status text in the column
-        local col_start = imgui.GetColumnOffset()
-        local col_width = imgui.GetColumnWidth()
-        
-        -- Calculate center position for each line individually
-        local line1 = 'Unknown.'
-        local line2 = 'Ask the Enigmatic Footprints.'
-        local line1_width = imgui.CalcTextSize(line1)
-        local line2_width = imgui.CalcTextSize(line2)
-        
-        -- Center first line
-        local pos_x1 = col_start + (col_width - line1_width) / 2
-        imgui.SetCursorPosX(pos_x1)
-        imgui.TextColored(text_color, line1)
-        
-        -- Center second line
-        local pos_x2 = col_start + (col_width - line2_width) / 2
-        imgui.SetCursorPosX(pos_x2)
-        imgui.TextColored(text_color, line2)
-        
-    elseif hourglass_remaining and hourglass_remaining > 0 then
-        -- On cooldown - show time remaining
-        local hours = math.floor(hourglass_remaining / 3600)
-        local minutes = math.floor((hourglass_remaining % 3600) / 60)
-        local seconds = hourglass_remaining % 60
-        local timeText = string.format('%02d:%02d:%02d', hours, minutes, seconds)
-        
-        -- Determine text color based on user's specification: yellow when Hourglass Time - Dynamis Time Remaining > 0, green otherwise
-        local text_color
-        if dynamis_remaining and dynamis_remaining > 0 then
-            local time_diff = hourglass_time - dynamis_remaining
-            if time_diff > 0 then
-                text_color = {1, 1, 0, 1}      -- Yellow (hourglass ready after Dynamis)
-            else
-                text_color = {0.2, 1, 0.2, 1}  -- Green (hourglass ready before/with Dynamis)
-            end
-        else
-            text_color = {0.2, 1, 0.2, 1}      -- Green (Dynamis ready, hourglass on cooldown)
+                                                           -- Status display - centered across entire window
+       if hourglass_time == 0 or hourglass_time == nil then
+           -- No hourglass use recorded
+           local display_text = 'Unknown'
+           local text_color = {0.6, 0.6, 0.6, 1} -- Softer gray
+           
+           -- Center the status text across the entire window
+           local text_width = imgui.CalcTextSize(display_text)
+           local pos_x = (total_width - text_width) / 2
+           imgui.SetCursorPosX(pos_x)
+           imgui.TextColored(text_color, display_text)
+          
+      else
+          -- Calculate if hourglass has enough time to bypass Dynamis cooldown
+          local dynamis_remaining = dynamis_remaining or 0
+          
+          local display_text
+          local text_color
+          
+          if hourglass_time >= dynamis_remaining then
+              -- Case 1: Hourglass time >= remaining cooldown → "Ready" in green
+              display_text = 'Ready'
+              text_color = {0.2, 1, 0.2, 1} -- Green
+          else
+              -- Case 2: Hourglass time < remaining cooldown → "Not enough time" in red
+              display_text = 'Not enough time'
+              text_color = {1, 0.2, 0.2, 1} -- Red
+          end
+          
+          -- Center the status text in the column
+          local col_start = imgui.GetColumnOffset()
+          local col_width = imgui.GetColumnWidth()
+          local text_width = imgui.CalcTextSize(display_text)
+          local pos_x = col_start + (col_width - text_width) / 2
+          imgui.SetCursorPosX(pos_x)
+          imgui.TextColored(text_color, display_text)
+      end
+     
+     imgui.NextColumn()
+     
+     -- Time display (right column) - right justified
+     if hourglass_time == 0 or hourglass_time == nil then
+         -- No hourglass use recorded - no time to display
+         imgui.Text('')
+     else
+                 -- Helper function to format seconds as hh"h":mm"m":ss"s"
+        local function format_time_readable(seconds)
+            local hours = math.floor(seconds / 3600)
+            local minutes = math.floor((seconds % 3600) / 60)
+            local secs = seconds % 60
+            return string.format('%02dh:%02dm:%02ds', hours, minutes, secs)
         end
         
-        -- Center the status text in the column
-        local col_start = imgui.GetColumnOffset()
-        local col_width = imgui.GetColumnWidth()
-        local text_width = imgui.CalcTextSize(timeText)
-        local pos_x = col_start + (col_width - text_width) / 2
-        imgui.SetCursorPosX(pos_x)
-        imgui.TextColored(text_color, timeText)
-        
-    else
-        -- Available - show current hourglass time (including increment if Dynamis is available)
-        local display_text
-        local text_color = {0.2, 1, 0.2, 1} -- Brighter green
-        
-        if is_dynamis_available and hourglass_time > 0 then
-            -- Show incrementing time when Dynamis is available
-            local hours = math.floor(hourglass_time / 3600)
-            local minutes = math.floor((hourglass_time % 3600) / 60)
-            local seconds = hourglass_time % 60
-            display_text = string.format('%02d:%02d:%02d', hours, minutes, seconds)
-            text_color = {0.8, 1, 0.8, 1} -- Light green to indicate incrementing
-        else
-            -- Show "Ready" when not incrementing
-            display_text = 'Ready'
-        end
-        
-        -- Center the status text in the column
-        local col_start = imgui.GetColumnOffset()
-        local col_width = imgui.GetColumnWidth()
-        local text_width = imgui.CalcTextSize(display_text)
-        local pos_x = col_start + (col_width - text_width) / 2
-        imgui.SetCursorPosX(pos_x)
-        imgui.TextColored(text_color, display_text)
-    end
+        local timeText = string.format('%s', format_time_readable(hourglass_time))
+         
+                   -- Add spacing to match vertical alignment first
+          imgui.Spacing()
+          imgui.Spacing()
+          
+          -- Right justify the time text
+          local col_start = imgui.GetColumnOffset()
+          local col_width = imgui.GetColumnWidth()
+          local text_width = imgui.CalcTextSize(timeText)
+          local pos_x = col_start + col_width - text_width
+          imgui.SetCursorPosX(pos_x)
+          
+          imgui.TextColored({1, 1, 1, 1}, timeText)  -- White text
+     end
     
     -- Enhanced tooltip with more detailed info
     if imgui.IsItemHovered() then
         imgui.BeginTooltip()
         imgui.PushStyleColor(0, {1, 1, 1, 1})  -- Text color (white)
         imgui.Text('Empty Hourglass System')
-        imgui.PopStyleColor()
         imgui.Separator()
-        imgui.Text('• 24-hour cooldown between uses')
-        imgui.Text('• Automatically detected via packet sniffing')
-        imgui.Text('• Increments by 1 second every 5 seconds when Dynamis [D] is available')
-        imgui.Text('• Green: Hourglass Time <= Dynamis Time Remaining')
-        imgui.Text('• Yellow: Hourglass Time > Dynamis Time Remaining')
-        imgui.Text('• Light green: Currently incrementing (Dynamis [D] available)')
-        if hourglass_time ~= 0 and hourglass_time ~= nil then
-            local hourglassDate = os.date('%Y-%m-%d %H:%M', hourglass_time)
-            imgui.Text('• Last use: ' .. hourglassDate)
-        end
-        imgui.EndTooltip()
-    end
-    
-    imgui.NextColumn()
-    
-    -- Add spacing at the bottom
-    imgui.Spacing()
-    imgui.Spacing()
-    
-    -- Add row separator below Hourglass section
-    imgui.PushStyleColor(3, {0.3, 0.3, 0.3, 0.8})  -- Separator color
-    imgui.Separator()
-    imgui.PopStyleColor()
+                 imgui.Text('• Shows the time value stored in the hourglass')
+         imgui.Text('• Time is consumed when entering Dynamis [D] with cooldown')
+         imgui.Text('• Green "Ready": Enough time to bypass current Dynamis cooldown')
+         imgui.Text('• Red "Not enough time": Not enough time to bypass current Dynamis cooldown')
+         if hourglass_time ~= 0 and hourglass_time ~= nil then
+             imgui.Text('• Time stored: ' .. hourglass_time .. ' seconds')
+         end
+         
+         -- Show "Last checked" timestamp if available
+         local packet_timestamp = packet_tracker.get_hourglass_packet_timestamp()
+         if packet_timestamp and packet_timestamp > 0 then
+             local last_checked_date = os.date('%Y-%m-%d %H:%M', packet_timestamp)
+             imgui.Text('• Last checked: ' .. last_checked_date)
+         end
+         imgui.EndTooltip()
+     end
+     
+     imgui.NextColumn()
+     
+     -- Minimal spacing at the bottom
+     imgui.Spacing()
 end
 
 -- Main render function
@@ -552,6 +575,7 @@ function gui.render(keyItemStatuses, trackedKeyItems, storage_canteens, packet_t
 
     -- Calculate dynamic window dimensions (includes Dynamis [D] section)
     local width, height = calculate_window_dimensions(keyItemStatuses)
+    
     imgui.SetNextWindowSizeConstraints({width, height}, {width, height})
 
     if not imgui.Begin('Keyring', showGui) then
@@ -571,13 +595,26 @@ function gui.render(keyItemStatuses, trackedKeyItems, storage_canteens, packet_t
         render_key_item_row(item, hasItem, storage_canteens, packet_tracker)
     end
 
-    imgui.Columns(1)
-    
-    -- Render Dynamis [D] section
-    render_dynamis_d_section(packet_tracker, total_width)
-    
-    -- Render Hourglass section
-    render_hourglass_section(packet_tracker, total_width)
+         imgui.Columns(1)
+     
+           -- Add spacing before the unified section
+      imgui.Spacing()
+      imgui.Spacing()
+      
+      -- Top separator for the unified section
+      imgui.Separator()
+      
+      -- Render Dynamis [D] section
+      render_dynamis_d_section(packet_tracker, total_width)
+      
+      -- Row separator between Dynamis and Hourglass
+      imgui.Separator()
+      
+      -- Render Hourglass section
+      render_hourglass_section(packet_tracker, total_width)
+      
+      -- Bottom separator for the unified section
+      imgui.Separator()
     
     imgui.End()
 end

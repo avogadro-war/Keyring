@@ -32,42 +32,18 @@ local function debug_print(message)
     end
 end
 
+-- Memory monitoring function (for debugging)
+local function get_memory_usage()
+    local info = collectgarbage('count')
+    return math.floor(info / 1024 * 100) / 100 -- Convert to MB with 2 decimal places
+end
+
 -- Set debug mode in packet handler
 local function update_debug_mode()
     if packet_tracker.set_debug_mode then
         packet_tracker.set_debug_mode(debug_mode)
     end
 end
-
--- Set up zone change callback
-packet_tracker.set_zone_change_callback(function(notify_time, check_pending, notified)
-    zone_notify_time = notify_time
-    zone_check_pending = check_pending
-    zone_notified = notified
-    
-    -- Check for available key items after zoning (if notifications are enabled)
-    if notification_enabled then
-        for id, _ in pairs(trackedKeyItems) do
-            local timestamp = packet_tracker.get_timestamp(id) or 0
-            local remaining = packet_tracker.get_remaining(id) or 0
-            local hasItem = packet_tracker.has_key_item(id)
-            local itemName = key_items.idToName[id] or ('ID ' .. tostring(id))
-            
-            -- Debug logging for zone change availability check
-            if debug_mode then
-                debug_print(string.format('Zone change check - %s: TS=%d, Rem=%d, Own=%s, Avail=%s', 
-                    itemName, timestamp, remaining, tostring(hasItem), 
-                    tostring(timestamp > 0 and remaining <= 0 and not hasItem)))
-            end
-            
-            -- Only notify if: has timestamp, is available (remaining <= 0), and player doesn't have it
-            if timestamp > 0 and remaining <= 0 and not hasItem then
-                debug_print('ZONE NOTIFICATION TRIGGERED for: ' .. itemName)
-                print(chat.header('Keyring'):append(chat.message(string.format('%s is ready for pickup', itemName))))
-            end
-        end
-    end
-end)
 
 -- Helper function to check if item is available
 local function is_item_available(id)
@@ -80,16 +56,45 @@ local function is_item_available(id)
     end
 end
 
+-- Set up zone change callback
+packet_tracker.set_zone_change_callback(function(notify_time, check_pending, notified)
+    zone_notify_time = notify_time
+    zone_check_pending = check_pending
+    zone_notified = notified
+    
+    -- Check for available key items after zoning (if notifications are enabled)
+    if notification_enabled then
+        for id, _ in pairs(trackedKeyItems) do
+            local hasItem = packet_tracker.has_key_item(id)
+            local itemName = key_items.idToName[id] or ('ID ' .. tostring(id))
+            local available = is_item_available(id)
+            
+            -- Debug logging for zone change availability check
+            if debug_mode then
+                debug_print(string.format('Zone change check - %s: Available=%s, Own=%s, ShouldNotify=%s', 
+                    itemName, tostring(available), tostring(hasItem), tostring(available and not hasItem)))
+            end
+            
+            -- Notify if item is available and player doesn't have it
+            -- This handles both cooldown-based items and storage-based items (canteens)
+            if available and not hasItem then
+                debug_print('ZONE NOTIFICATION TRIGGERED for: ' .. itemName)
+                print(chat.header('Keyring'):append(chat.message(string.format('%s is ready for pickup', itemName))))
+            end
+        end
+    end
+end)
+
 -- Helper function to get available items for pickup
 local function get_available_items()
     local availableItems = {}
     for id, _ in pairs(trackedKeyItems) do
-        local timestamp = packet_tracker.get_timestamp(id) or 0
-        local remaining = packet_tracker.get_remaining(id) or 0
         local hasItem = packet_tracker.has_key_item(id)
+        local available = is_item_available(id)
         
-        -- Only show if: has timestamp, is available (remaining <= 0), and player doesn't have it
-        if timestamp > 0 and remaining <= 0 and not hasItem then
+        -- Only show if item is available and player doesn't have it
+        -- This handles both cooldown-based items and storage-based items (canteens)
+        if available and not hasItem then
             local itemName = key_items.idToName[id] or ('ID ' .. tostring(id))
             table.insert(availableItems, itemName)
         end
@@ -117,6 +122,13 @@ ashita.events.register('command', 'command_cb', function(e)
         if debug_mode then
             print(chat.header('Keyring'):append(chat.message('Debug messages will now be shown in chat.')))
         end
+        return true
+    end
+
+    -- Memory usage command
+    if args[2] == 'memory' then
+        local memory_mb = get_memory_usage()
+        print(chat.header('Keyring'):append(chat.message('Current memory usage: ' .. memory_mb .. ' MB')))
         return true
     end
 
@@ -245,6 +257,82 @@ ashita.events.register('command', 'command_cb', function(e)
         return true
     end
 
+    -- Manual hourglass command - set hourglass time for missed packets
+    if args[2] == 'hourglass' then
+        if not args[3] or args[3] == '' then
+            print(chat.header('Keyring'):append(chat.message('Usage: /keyring hourglass <time_in_seconds>')))
+            print(chat.message('Example: /keyring hourglass 7200 (for 2 hours)'))
+            return true
+        end
+        
+        local hourglass_time = tonumber(args[3])
+        if not hourglass_time or hourglass_time < 0 then
+            print(chat.header('Keyring'):append(chat.message('Invalid time value. Please provide time in seconds.')))
+            return true
+        end
+        
+        local current_state = packet_tracker.get_state()
+        local now = os.time()
+        
+        -- Set hourglass time manually
+        current_state.hourglass_time = hourglass_time
+        current_state.hourglass_packet_timestamp = now
+
+        packet_tracker.save_state()
+        
+        local hours = math.floor(hourglass_time / 3600)
+        local minutes = math.floor((hourglass_time % 3600) / 60)
+        local seconds = hourglass_time % 60
+        print(chat.header('Keyring'):append(chat.message(string.format('Manual hourglass time set: %02dh:%02dm:%02ds (%d seconds)', hours, minutes, seconds, hourglass_time))))
+        print(chat.header('Keyring'):append(chat.message('Time will be consumed automatically when entering Dynamis [D] with cooldown')))
+        
+        return true
+    end
+
+    -- Reset hourglass time command
+    if args[2] == 'reset_hourglass' then
+        local success = packet_tracker.reset_hourglass_time()
+        if success then
+            print(chat.header('Keyring'):append(chat.message('Hourglass time has been reset to 0')))
+        else
+            print(chat.header('Keyring'):append(chat.message('Failed to reset hourglass time')))
+        end
+        return true
+    end
+
+    -- Dump packet data command (for debugging)
+    if args[2] == 'dump_packet' then
+        print(chat.header('Keyring'):append(chat.message('Packet dump command added - will dump next 0x02A packet data')))
+        -- This will be handled in the packet handler
+        return true
+    end
+
+    -- Force update hourglass time command (bypasses packet validation)
+    if args[2] == 'force_hourglass' then
+        if not args[3] or args[3] == '' then
+            print(chat.header('Keyring'):append(chat.message('Usage: /keyring force_hourglass <time_in_seconds>')))
+            print(chat.message('Example: /keyring force_hourglass 147939'))
+            return true
+        end
+        
+        local hourglass_time = tonumber(args[3])
+        if not hourglass_time or hourglass_time < 0 then
+            print(chat.header('Keyring'):append(chat.message('Invalid time value. Please provide time in seconds.')))
+            return true
+        end
+        
+        local success = packet_tracker.force_hourglass_time(hourglass_time)
+        if success then
+            local hours = math.floor(hourglass_time / 3600)
+            local minutes = math.floor((hourglass_time % 3600) / 60)
+            local seconds = hourglass_time % 60
+            print(chat.header('Keyring'):append(chat.message(string.format('Hourglass time forced to: %02dh:%02dm:%02ds (%d seconds)', hours, minutes, seconds, hourglass_time))))
+        else
+            print(chat.header('Keyring'):append(chat.message('Failed to force hourglass time')))
+        end
+        return true
+    end
+
     -- Test Dynamis [D] entry (for testing purposes)
     if args[2] == 'test_dynamis' then
         local current_state = packet_tracker.get_state()
@@ -254,6 +342,69 @@ ashita.events.register('command', 'command_cb', function(e)
         
         print(chat.header('Keyring'):append(chat.message('Test: Dynamis [D] entry time set to current time')))
         print(chat.header('Keyring'):append(chat.message('Use /keyring status to see the cooldown')))
+        return true
+    end
+
+    -- Backup commands
+    if args[2] == 'backup' then
+        if not args[3] or args[3] == '' then
+            print(chat.header('Keyring'):append(chat.message('Backup Commands:')))
+            print(chat.message('  /keyring backup create - Create a manual backup'))
+            print(chat.message('  /keyring backup list - List available backups'))
+            print(chat.message('  /keyring backup restore <filename> - Restore from backup'))
+            print(chat.message('  /keyring backup info - Show backup system info'))
+            return true
+        end
+        
+        if args[3] == 'create' then
+            local success = persistence.create_manual_backup(debug_print)
+            if success then
+                print(chat.header('Keyring'):append(chat.message('Manual backup created successfully')))
+            else
+                print(chat.header('Keyring'):append(chat.message('Failed to create manual backup')))
+            end
+            return true
+        end
+        
+        if args[3] == 'list' then
+            local backups = persistence.list_backups(debug_print)
+            if #backups > 0 then
+                print(chat.header('Keyring'):append(chat.message('Available backups:')))
+                for i, backup in ipairs(backups) do
+                    print(chat.message('  ' .. i .. '. ' .. backup))
+                end
+            else
+                print(chat.header('Keyring'):append(chat.message('No backups found')))
+            end
+            return true
+        end
+        
+        if args[3] == 'restore' then
+            if not args[4] or args[4] == '' then
+                print(chat.header('Keyring'):append(chat.message('Usage: /keyring backup restore <filename>')))
+                print(chat.message('Use /keyring backup list to see available backups'))
+                return true
+            end
+            
+            local success = persistence.restore_from_backup(args[4], debug_print)
+            if success then
+                print(chat.header('Keyring'):append(chat.message('Successfully restored from backup: ' .. args[4])))
+                print(chat.header('Keyring'):append(chat.message('Please reload the addon with /addon reload keyring')))
+            else
+                print(chat.header('Keyring'):append(chat.message('Failed to restore from backup: ' .. args[4])))
+            end
+            return true
+        end
+        
+        if args[3] == 'info' then
+            print(chat.header('Keyring'):append(chat.message('Backup System Information:')))
+            print(chat.message('  • Automatic backups: Every hour'))
+            print(chat.message('  • Backup retention: 24 backups (1 day)'))
+            print(chat.message('  • Backup location: data/backups/'))
+            print(chat.message('  • Backup format: keyring_backup_<server_id>_<timestamp>.lua'))
+            return true
+        end
+        
         return true
     end
 
@@ -284,23 +435,25 @@ ashita.events.register('command', 'command_cb', function(e)
         print(chat.message('  • Moglophone (20h cooldown) - Acquired when obtained'))
         print(chat.message('  • Mystical Canteen (20h generation cycle) - Storage-based tracking'))
         print(chat.message('  • Shiny Rakaznar Plate (20h cooldown) - Starts when used for teleport'))
-        print(chat.message('  • Dynamis [D] Entry (60h cooldown) - Auto-detected on zone entry'))
-        print(chat.message('  • Empty Hourglass (24h cooldown) - Auto-detected via NPC interactions'))
+        --print(chat.message('  • Dynamis [D] Entry (60h cooldown) - Auto-detected on zone entry'))
+        --print(chat.message('  • Empty Hourglass (24h cooldown) - Auto-detected via NPC interactions'))
         print(chat.message(''))
         print(chat.message('== COMMANDS =='))
         print(chat.message('  /keyring [gui] - Toggle the GUI window'))
         print(chat.message('  /keyring check - Check for available key items (individual callouts)'))
         print(chat.message('  /keyring fix <item> - Manually trigger acquisition for missed packets'))
         print(chat.message('    Available items: moglophone, canteen, plate'))
+        --print(chat.message('  /keyring hourglass <seconds> - Manually set hourglass time for missed packets'))
         print(chat.message('  /keyring notify - Toggle zone change notifications (default: on)'))
         print(chat.message('  /keyring status - Show addon status and cooldown information'))
         print(chat.message('  /keyring debug - Toggle debug messages in chat'))
+        print(chat.message('  /keyring backup - Backup system commands (create/list/restore/info)'))
         print(chat.message('  /keyring help - Show this help information'))
         print(chat.message(''))
         print(chat.message('== NOTIFICATIONS =='))
         print(chat.message('  • Individual item acquisition alerts (always on)'))
         print(chat.message('  • Individual "ready for pickup" alerts on zone change'))
-        print(chat.message('  • No general notifications - each item gets specific callout'))
+        --print(chat.message('  • No general notifications - each item gets specific callout'))
         print(chat.message('  • Toggle zone notifications with /keyring notify'))
         print(chat.message(''))
         print(chat.message('== FEATURES =='))
@@ -311,9 +464,9 @@ ashita.events.register('command', 'command_cb', function(e)
         print(chat.message('  • Smart cooldown handling per item type'))
         print(chat.message('  • Zone-based automatic Dynamis [D] and Ra\'Kaznar detection'))
         print(chat.message(''))
-        print(chat.message('== DEVELOPER COMMANDS =='))
-        print(chat.message('  /keyring test_dynamis - Test Dynamis [D] entry detection'))
-        print(chat.message('  /keyring test_zone - Test current zone detection'))
+        --print(chat.message('== DEVELOPER COMMANDS =='))
+        --print(chat.message('  /keyring test_dynamis - Test Dynamis [D] entry detection'))
+        --print(chat.message('  /keyring test_zone - Test current zone detection'))
         return true
     end
 
@@ -356,12 +509,11 @@ end)
 
 -- Main render loop
 ashita.events.register('d3d_present', 'render', function()
-    local current_time = os.time()
-    
     -- Update storage canteens every 5 seconds
-    if current_time - (last_storage_update or 0) > 5 then
+    local current_time_seconds = os.time()
+    if current_time_seconds - (last_storage_update or 0) > 5 then
         storage_canteens = packet_tracker.update_storage_canteens()
-        last_storage_update = current_time
+        last_storage_update = current_time_seconds
     end
 
     -- Zone notifications are now handled immediately in the zone change callback
@@ -374,9 +526,9 @@ ashita.events.register('d3d_present', 'render', function()
     if debug_mode and #keyItemStatuses > 0 then
         -- Use a throttled debug print for render-related messages
         local debug_message = 'GUI render - keyItemStatuses count: ' .. #keyItemStatuses
-        if not _G.last_gui_debug_time or (current_time - _G.last_gui_debug_time) >= 10 then
+        if not _G.last_gui_debug_time or (os.time() - _G.last_gui_debug_time) >= 10 then
             debug_print(debug_message)
-            _G.last_gui_debug_time = current_time
+            _G.last_gui_debug_time = os.time()
         end
     end
     

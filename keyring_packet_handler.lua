@@ -16,7 +16,9 @@ local chat = require('chat')
 local debug_throttle = {
     messages = {},  -- Track last message time for each unique message
     default_interval = 5.0,  -- Default throttle interval in seconds
-    render_interval = 10.0   -- Longer interval for render-related messages
+    render_interval = 10.0,   -- Longer interval for render-related messages
+    last_cleanup = 0,         -- Last cleanup time
+    cleanup_interval = 300    -- Cleanup every 5 minutes
 }
 
 -- Throttled debug function - prevents spam from frequent calls
@@ -29,16 +31,31 @@ local function debug_print(message, throttle_interval)
     throttle_interval = throttle_interval or debug_throttle.default_interval
     
     local current_time = os.time()
+    
+    -- Periodic cleanup of old debug messages to prevent memory bloat
+    if current_time - debug_throttle.last_cleanup > debug_throttle.cleanup_interval then
+        local cutoff_time = current_time - 3600 -- Remove messages older than 1 hour
+        for msg, time in pairs(debug_throttle.messages) do
+            if time < cutoff_time then
+                debug_throttle.messages[msg] = nil
+            end
+        end
+        debug_throttle.last_cleanup = current_time
+    end
+    
     local last_time = debug_throttle.messages[message]
     
     -- Check if enough time has passed since last identical message
     if not last_time or (current_time - last_time) >= throttle_interval then
         pcall(function()
-            print('[Keyring Debug] ' .. tostring(message))
+            print(DEBUG_PREFIX .. tostring(message))
         end)
         debug_throttle.messages[message] = current_time
     end
 end
+
+-- Pre-allocated debug prefix to reduce string concatenation
+local DEBUG_PREFIX = '[Keyring Debug] '
 
 -- Special debug function for render-related messages (longer throttle)
 local function debug_print_render(message)
@@ -120,6 +137,7 @@ local state = {
 }
 
 local firstLoad = false
+local last_player_server_id = nil
 
 -- Create a protected state accessor to prevent corruption
 local function get_state()
@@ -242,6 +260,11 @@ local function update_keyitem_state(id)
         -- not when the key item is acquired
         debug_print('Canteen key item acquired')
         request_currency_data()
+    else
+        -- Default case: set timestamp for any other tracked key item
+        current_state.timestamps[id] = now
+        debug_print('Key item acquired - timestamp set: ' .. tostring(id))
+        print(chat.header('Keyring'):append(chat.message(string.format('Acquired tracked key item: %s', key_items.idToName[id] or ('ID ' .. id)))))
     end
     
     -- Save state after changes
@@ -435,11 +458,12 @@ function handler.get_dynamis_d_cooldown_remaining()
     end
     
     local current_time = os.time()
-    local time_since_entry = current_time - current_state.dynamis_d_entry_time
     
-    -- Dynamis [D] cooldown is 60 hours (216000 seconds)
-    local cooldown_duration = 216000
-    local remaining = cooldown_duration - time_since_entry
+    -- Use stored projected ready time (calculated when entry was recorded)
+    local projected_ready_time = current_state.dynamis_projected_ready_time or 0
+    
+    -- Calculate remaining time until ready
+    local remaining = projected_ready_time - current_time
     
     return math.max(0, remaining)
 end
@@ -450,86 +474,53 @@ function handler.get_dynamis_d_entry_time()
     return current_state.dynamis_d_entry_time or 0
 end
 
- -- API: Get hourglass timestamp (with increment logic)
- function handler.get_hourglass_time()
-     local current_state = get_state()
-     local base_hourglass_time = current_state.hourglass_time or 0
-     local packet_timestamp = current_state.hourglass_packet_timestamp or 0
-     local increment_start_time = current_state.hourglass_increment_start_time or 0
-     
-     -- If no base hourglass time, return 0
-     if base_hourglass_time == 0 then
-         return 0
-     end
-     
-     -- If no packet timestamp, fall back to old increment logic
-     if packet_timestamp == 0 then
-         -- If increment hasn't started, return base time
-         if increment_start_time == 0 then
-             return base_hourglass_time
-         end
-         
-         -- Calculate increment: 1 second for every 5 seconds that pass
-         local current_time = os.time()
-         local time_since_increment_start = current_time - increment_start_time
-         local increment_seconds = math.floor(time_since_increment_start / 5)  -- 1 second per 5 seconds
-         
-         -- Return base time plus increment
-         return base_hourglass_time + increment_seconds
-     end
-     
-     -- Use new formula: (current_time - packet_timestamp) / 5 + base_hourglass_time
-     local current_time = os.time()
-     local time_since_packet = current_time - packet_timestamp
-     local accumulated_seconds = math.floor(time_since_packet / 5)  -- 1 second per 5 seconds
-     
-     -- Return base hourglass time plus accumulated time
-     return base_hourglass_time + accumulated_seconds
- end
+-- API: Get hourglass time value (simplified - just return the base time from 0x02A packet)
+function handler.get_hourglass_time()
+    local current_state = get_state()
+    local base_hourglass_time = current_state.hourglass_time or 0
+    
+    -- Simply return the base hourglass time (no accrual logic)
+    return base_hourglass_time
+end
 
--- API: Get hourglass time remaining (24-hour cooldown)
+-- API: Get hourglass time remaining (this is the time value stored in the hourglass)
 function handler.get_hourglass_time_remaining()
     local hourglass_time = handler.get_hourglass_time()
     if hourglass_time == 0 then
         return nil  -- No hourglass use recorded
     end
     
-    local current_time = os.time()
-    local elapsed = current_time - hourglass_time
-    local cooldown_duration = 86400  -- 24 hours in seconds
-    
-    local remaining = cooldown_duration - elapsed
-    return math.max(0, remaining)
+    -- Return the hourglass time value directly (this is a duration, not a cooldown)
+    return hourglass_time
 end
 
--- API: Start hourglass increment when Dynamis becomes available
-function handler.start_hourglass_increment()
+-- API: Get hourglass packet timestamp (for "Last checked" display)
+function handler.get_hourglass_packet_timestamp()
     local current_state = get_state()
-    local increment_start_time = current_state.hourglass_increment_start_time or 0
-    
-    -- Only start increment if it hasn't already started
-    if increment_start_time == 0 then
-        current_state.hourglass_increment_start_time = os.time()
-        save_state()
-        debug_print('Hourglass increment started - Dynamis [D] is now available')
-    end
+    return current_state.hourglass_packet_timestamp or 0
 end
 
--- API: Stop hourglass increment when Dynamis becomes unavailable
-function handler.stop_hourglass_increment()
+-- API: Reset hourglass time to 0
+function handler.reset_hourglass_time()
     local current_state = get_state()
-    local increment_start_time = current_state.hourglass_increment_start_time or 0
-    
-    -- Only stop increment if it was running
-    if increment_start_time > 0 then
-        -- Calculate the current hourglass time before stopping
-        local current_hourglass_time = handler.get_hourglass_time()
-        current_state.hourglass_time = current_hourglass_time
-        current_state.hourglass_increment_start_time = 0
-        save_state()
-        debug_print('Hourglass increment stopped - Dynamis [D] is no longer available')
-    end
+    current_state.hourglass_time = 0
+    current_state.hourglass_packet_timestamp = 0
+    save_state()
+    debug_print('Hourglass time reset to 0')
+    return true
 end
+
+-- API: Force hourglass time to a specific value (bypasses packet validation)
+function handler.force_hourglass_time(time_value)
+    local current_state = get_state()
+    current_state.hourglass_time = time_value
+    current_state.hourglass_packet_timestamp = os.time()
+    save_state()
+    debug_print('Hourglass time forced to: ' .. time_value)
+    return true
+end
+
+
 
 -- API: Check if Dynamis [D] is available (cooldown expired)
 function handler.is_dynamis_d_available()
@@ -600,10 +591,64 @@ function handler.load_persistence_file()
         return
     end
     
+    -- Check for character change
+    local party = mem:GetParty()
+    if party then
+        local current_player_server_id = party:GetMemberServerId(0)
+        if current_player_server_id and current_player_server_id > 0 then
+            if last_player_server_id and last_player_server_id ~= current_player_server_id then
+                debug_print('Character change detected: ' .. last_player_server_id .. ' -> ' .. current_player_server_id)
+                -- Clear cached player ID in persistence module
+                if persistence.clear_cached_player_id then
+                    persistence.clear_cached_player_id()
+                end
+                -- Reset state for new character
+                state = {
+                    timestamps = {},
+                    owned = {},
+                    storage_canteens = 0,
+                    last_canteen_time = 0
+                }
+            end
+            last_player_server_id = current_player_server_id
+        end
+    end
+    
     debug_print('Loading persistence file')
     local loaded_state = load_state()
     
     if type(loaded_state) == 'table' then
+        -- Clean up any key items that are no longer tracked
+        if loaded_state.timestamps then
+            local cleaned_timestamps = {}
+            for id, timestamp in pairs(loaded_state.timestamps) do
+                if trackedKeyItems[id] then
+                    cleaned_timestamps[id] = timestamp
+                else
+                    debug_print('Removing untracked key item from timestamps: ' .. tostring(id))
+                end
+            end
+            loaded_state.timestamps = cleaned_timestamps
+        end
+        
+        if loaded_state.owned then
+            local cleaned_owned = {}
+            for id, owned in pairs(loaded_state.owned) do
+                if trackedKeyItems[id] then
+                    cleaned_owned[id] = owned
+                else
+                    debug_print('Removing untracked key item from owned: ' .. tostring(id))
+                end
+            end
+            loaded_state.owned = cleaned_owned
+        end
+        
+        -- Migrate existing persistence files to include projected ready time
+        if not loaded_state.dynamis_projected_ready_time and loaded_state.dynamis_d_entry_time and loaded_state.dynamis_d_entry_time > 0 then
+            debug_print('Migrating existing Dynamis entry time to include projected ready time')
+            loaded_state.dynamis_projected_ready_time = loaded_state.dynamis_d_entry_time + 216000  -- 60 hours = 216000 seconds
+        end
+        
         -- Validate canteen generation timer - only reset if extremely old (7 days)
         if loaded_state.last_canteen_time and loaded_state.last_canteen_time > 0 then
             local currentTime = os.time()
@@ -631,7 +676,19 @@ end
 
 -- Consolidated packet handler for all packet types
 ashita.events.register('packet_in', 'Keyring_PacketHandler', function(e)
-    if e.id == 0x55 then
+    if e.id == 0x053 then
+        -- Logout counter packet - clear cached player ID when logout is imminent
+        local param = struct.unpack('I', e.data, 0x04 + 1)
+        if param and param <= 5 then
+            debug_print('Logout detected (0x053 param=' .. param .. '), clearing cached player ID')
+            -- Clear cached player ID in persistence module
+            if persistence.clear_cached_player_id then
+                persistence.clear_cached_player_id()
+            end
+            -- Reset last player server ID to force fresh detection on next login
+            last_player_server_id = nil
+        end
+    elseif e.id == 0x55 then
         -- Key item list (0x55) - Using Thorny's approach
         local current_state = get_state()
         if not current_state.owned then
@@ -751,13 +808,55 @@ ashita.events.register('packet_in', 'Keyring_PacketHandler', function(e)
         
         for pre_zone_id, dynamis_zone_id in pairs(dynamis_zone_transitions) do
             if previous_zone == pre_zone_id and current_zone == dynamis_zone_id then
-                -- We're transitioning from an entry zone to a Dynamis [D] zone - record the entry
+                -- We're transitioning from an entry zone to a Dynamis [D] zone
                 local now = os.time()
+                
+                -- Check if there was an existing Dynamis [D] cooldown
+                local existing_cooldown_remaining = 0
+                if current_state.dynamis_d_entry_time and current_state.dynamis_d_entry_time > 0 then
+                    local time_since_entry = now - current_state.dynamis_d_entry_time
+                    local cooldown_duration = 216000  -- 60 hours = 216000 seconds
+                    existing_cooldown_remaining = math.max(0, cooldown_duration - time_since_entry)
+                end
+                
+                -- If there was a cooldown remaining, consume hourglass time
+                if existing_cooldown_remaining > 0 then
+                    local total_hourglass_time = handler.get_hourglass_time() -- Base + any accrual time
+                    if total_hourglass_time > 0 then
+                        -- Consume hourglass time equal to remaining cooldown from total (base + accrual)
+                        local consumed_time = math.min(total_hourglass_time, existing_cooldown_remaining)
+                        local remaining_time = total_hourglass_time - consumed_time
+                        
+                        -- Set the remaining time as the new base hourglass time (no more accrual since Dynamis will be on cooldown)
+                        current_state.hourglass_time = remaining_time
+                        current_state.hourglass_packet_timestamp = now  -- Reset timestamp since we're setting new base time
+
+                        
+                        debug_print(string.format('Dynamis [D] entry with cooldown - consumed %d seconds from %d total hourglass time, %d remaining', 
+                            consumed_time, total_hourglass_time, remaining_time))
+                        print(chat.header('Keyring'):append(chat.message(string.format('Entered Dynamis [D] with cooldown - consumed %d:%02d hourglass time', 
+                            math.floor(consumed_time / 3600), math.floor((consumed_time % 3600) / 60)))))
+                        
+                        if remaining_time <= 0 then
+                            print(chat.header('Keyring'):append(chat.message('Warning: Empty Hourglass time depleted')))
+                        end
+                    else
+                        debug_print('Dynamis [D] entry with cooldown but no hourglass time available')
+                        print(chat.header('Keyring'):append(chat.message('Entered Dynamis [D] with cooldown - no hourglass time to consume')))
+                    end
+                else
+                    debug_print('Dynamis [D] entry with no existing cooldown - no hourglass time consumed')
+                    print(chat.header('Keyring'):append(chat.message('Entered Dynamis [D] - no cooldown to bypass')))
+                end
+                
+                -- Record new entry time (starts fresh 60-hour cooldown)
                 current_state.dynamis_d_entry_time = now
+                -- Calculate and store projected ready time (entry time + 60 hours)
+                current_state.dynamis_projected_ready_time = now + 216000  -- 60 hours = 216000 seconds
                 save_state()
                 
                 debug_print('Dynamis [D] entry detected - zone transition from ' .. pre_zone_id .. ' to ' .. dynamis_zone_id)
-                print(chat.header('Keyring'):append(chat.message(string.format('Entered Dynamis [D] zone (ID: %d) - cooldown started', dynamis_zone_id))))
+                print(chat.header('Keyring'):append(chat.message(string.format('Dynamis [D] zone (ID: %d) - new 60-hour cooldown started', dynamis_zone_id))))
                 break
             end
         end
@@ -792,9 +891,13 @@ ashita.events.register('packet_in', 'Keyring_PacketHandler', function(e)
         -- Extract message ID and parameters from the packet
         local messageId = struct.unpack('H', e.data, 0x1A+1)
         local actor_ID = struct.unpack('I', e.data, 0x04+1)  -- Actor ID (4 bytes) at offset 0x04
-        local param2 = struct.unpack('I', e.data, 0x08+1)  -- Use 'I' for 32-bit integer since Param2 is 4 bytes
+        -- Read hourglass time manually (3 bytes, little-endian) at offset 0x0C
+        local byte1 = e.data:byte(0x0C+1)
+        local byte2 = e.data:byte(0x0D+1)
+        local byte3 = e.data:byte(0x0E+1)
+        local hourglass_time = byte1 + (byte2 * 256) + (byte3 * 65536)
         
-        debug_print('0x02A packet received - Message ID: ' .. messageId .. ', Actor ID: ' .. actor_ID .. ', Param2: ' .. param2)
+        debug_print('0x02A packet received - Message ID: ' .. messageId .. ', Actor ID: ' .. actor_ID .. ', Hourglass Time: ' .. hourglass_time)
         
         -- Validation table: Actor ID -> Expected Message ID pairs
         local hourglass_validation = {
@@ -804,22 +907,39 @@ ashita.events.register('packet_in', 'Keyring_PacketHandler', function(e)
             [17736063] = 49463
         }
         
-                 -- Double validation: Check both actor_ID and messageId are valid and match
-         local expected_message_id = hourglass_validation[actor_ID]
-         if expected_message_id and messageId == expected_message_id then
+                         -- Double validation: Check both actor_ID and messageId are valid and match
+        local expected_message_id = hourglass_validation[actor_ID]
+        print(chat.header('Keyring'):append(chat.message('DEBUG: Validation check - Expected Message ID: ' .. tostring(expected_message_id) .. ', Match: ' .. tostring(expected_message_id and messageId == expected_message_id))))
+        if expected_message_id and messageId == expected_message_id then
              -- This is a confirmed hourglass usage message
              local now = os.time()
-             -- Store the Param2 value (hourglass time in seconds) and the timestamp when it was received
-             current_state.hourglass_time = param2
-             current_state.hourglass_packet_timestamp = now  -- Store timestamp when packet was received
-             current_state.hourglass_increment_start_time = 0  -- Reset increment state when new packet arrives
-             save_state()
              
-             debug_print('Hourglass time detected via 0x02A packet - Actor ID: ' .. actor_ID .. ', Message ID: ' .. messageId .. ', Hourglass Time: ' .. param2 .. ' seconds, Timestamp: ' .. now)             return
+             -- Get the current base hourglass time (without accrual)
+             local current_base = current_state.hourglass_time or 0
+             
+             -- Always update with the new packet value if it's different
+             -- This ensures we get the latest hourglass time from the server
+             if hourglass_time ~= current_base then
+                 -- Store the new hourglass time value as the base hourglass time
+                 current_state.hourglass_time = hourglass_time
+                 current_state.hourglass_packet_timestamp = now  -- Store timestamp when packet was received
+
+                 
+                 debug_print('Hourglass time updated via 0x02A packet - Actor ID: ' .. actor_ID .. ', Message ID: ' .. messageId .. ', Old Time: ' .. current_base .. ', New Time: ' .. hourglass_time .. ' seconds, Timestamp: ' .. now)
+                 print(chat.header('Keyring'):append(chat.message('Empty Hourglass time updated: ' .. hourglass_time .. ' seconds')))
+             else
+                 debug_print('0x02A packet received but time (' .. hourglass_time .. ') matches current base (' .. current_base .. ') - no update needed')
+             end
+             
+             -- Empty Hourglass time is tracked but not actively consumed here
+             -- Consumption happens automatically when entering Dynamis while on cooldown
+             
+             save_state()
+             return
          end
         
         -- Log other 0x02A packets for debugging (throttled to prevent spam)
-        debug_print('0x02A packet not recognized as hourglass - Message ID: ' .. messageId .. ', Param2: ' .. param2, 5.0)
+        debug_print('0x02A packet not recognized as hourglass - Message ID: ' .. messageId .. ', Hourglass Time: ' .. hourglass_time, 5.0)
         
     elseif e.id == 0x118 then
         -- Canteen storage response (0x118)
@@ -875,8 +995,20 @@ ashita.events.register('packet_in', 'Keyring_PacketHandler', function(e)
     end
 end)
 
+-- Cache for key item statuses to reduce repeated calculations
+local status_cache = {}
+local last_status_update = 0
+local STATUS_CACHE_DURATION = 0.15 -- Cache for 0.15 seconds (slightly longer than render frequency)
+
 -- Get key item statuses for GUI
 function handler.get_key_item_statuses()
+    local current_time = os.clock() -- Use os.clock() for sub-second precision
+    
+    -- Return cached result if still valid
+    if status_cache.result and (current_time - last_status_update) < STATUS_CACHE_DURATION then
+        return status_cache.result
+    end
+    
     local result = {}
     
     -- Always try to load persistence if not already loaded
@@ -942,6 +1074,10 @@ function handler.get_key_item_statuses()
             owned = owned,
         })
     end
+
+    -- Cache the result for future calls
+    status_cache.result = result
+    last_status_update = current_time
 
     return result
 end
