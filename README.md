@@ -10,7 +10,7 @@ A Final Fantasy XI addon for Ashita4 that tracks key items with cooldown timers,
 - **Zone Change Alerts**: Individual "ready for pickup" notifications when zoning
 - **Special Canteen Tracking**: Advanced tracking for Mystical Canteen with storage system (1/3, 2/3, 3/3)
 - **Dynamis [D] Tracking**: Automatic detection of Dynamis [D] zone entries with 60-hour cooldown tracking
-- **Empty Hourglass Tracking**: Automatic detection via NPC interactions with 24-hour cooldown
+- **Empty Hourglass Tracking**: Automatic detection via NPC interactions with time value tracking and status display
 - **Manual Fix Command**: Recover from missed packets with manual acquisition triggers
 - **Persistent State**: Remembers timestamps across game sessions
 - **Modern GUI**: Clean, responsive interface with dynamic sizing
@@ -31,7 +31,7 @@ The addon currently tracks these items with their respective cooldowns:
   - Bastok Mines (234) → Dynamis-Bastok [D] (295)
   - Windurst Walls (239) → Dynamis-Windurst [D] (296)
   - Ru'Lude Gardens (243) → Dynamis-Jeuno [D] (297)
-- **Empty Hourglass** (24h cooldown) - Auto-detected via NPC interactions
+- **Empty Hourglass** - Time value tracked via NPC interactions with status display
 
 ## Installation
 
@@ -54,6 +54,9 @@ The addon currently tracks these items with their respective cooldowns:
 | `/keyring fix <item>` | Manually trigger acquisition for missed packets |
 | `/keyring notify` | Toggle zone change notifications (default: on) |
 | `/keyring status` | Show addon status and cooldown information |
+| `/keyring hourglass <seconds>` | Manually set hourglass time for missed packets |
+| `/keyring reset_hourglass` | Reset hourglass time to 0 |
+| `/keyring force_hourglass <seconds>` | Force hourglass time (bypasses validation) |
 | `/keyring debug` | Toggle debug messages in chat |
 | `/keyring help` | Show comprehensive help information |
 
@@ -76,6 +79,10 @@ The addon provides a clean, responsive GUI with two main sections:
 - **Time Remaining**: Countdown timer for the 60-hour cooldown
 - **Last Entry**: Timestamp of the last Dynamis [D] entry
 
+### Empty Hourglass Section
+- **Status**: "Ready" (green) when hourglass time ≥ remaining Dynamis cooldown, "Not enough time" (red) otherwise
+- **Time Display**: Shows the current hourglass time value in hh:mm:ss format
+
 ### Status Colors
 
 - **Gray**: "Unknown" - No acquisition time recorded yet
@@ -84,6 +91,7 @@ The addon provides a clean, responsive GUI with two main sections:
 - **White**: Canteen storage count (e.g., "Available (2/3)")
 - **Yellow**: Dynamis [D] section header
 - **Green/Red**: Dynamis [D] availability status
+- **Green/Red**: Empty Hourglass status ("Ready" / "Not enough time")
 
 ## How It Works
 
@@ -111,6 +119,9 @@ The Mystical Canteen has a unique storage system where you can hold up to 3 cant
 
 ### Dynamis [D] Tracking
 The addon automatically detects when you enter a Dynamis [D] zone by monitoring zone transitions from specific pre-Dynamis areas. When a valid transition is detected, it records the entry time and starts the 60-hour cooldown timer.
+
+### Empty Hourglass Tracking
+The addon tracks the time value stored in the Empty Hourglass by intercepting 0x02A packets when interacting with the Enigmatic Footprints NPC. The hourglass time is displayed in the GUI with a status indicator showing whether it's sufficient to bypass the current Dynamis [D] cooldown.
 
 ### Persistent Storage
 All timestamps and state information are saved between game sessions, ensuring your tracking continues even after logging out and back in.
@@ -196,7 +207,15 @@ The addon has been optimized for performance and maintainability:
 
 ## Version History
 
-- **v0.3.2**: Individual notifications and manual fix functionality
+- **v0.3.2**: Empty Hourglass tracking and status display improvements
+  - **Empty Hourglass tracking**: Added automatic detection of hourglass time via 0x02A packet parsing
+  - **Status display**: Shows "Ready" (green) when hourglass time ≥ remaining Dynamis cooldown, "Not enough time" (red) otherwise
+  - **Manual hourglass commands**: Added `/keyring hourglass`, `/keyring reset_hourglass`, and `/keyring force_hourglass` commands
+  - **Packet parsing fix**: Corrected 0x02A packet offset for accurate hourglass time reading
+  - **GUI integration**: Added Empty Hourglass section to the GUI with time display and status indicators
+  - **Debug cleanup**: Removed superfluous debug output for cleaner chat experience
+
+- **v0.3.1**: Individual notifications and manual fix functionality
   - **Individual item notifications**: Replaced general "One or more items available" with specific per-item callouts
   - **Zone change individual alerts**: Each available item now gets its own "ready for pickup" notification
   - **Manual fix command**: Added `/keyring fix <item>` to manually trigger acquisition for missed packets

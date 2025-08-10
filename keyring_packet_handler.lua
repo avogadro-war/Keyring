@@ -897,8 +897,6 @@ ashita.events.register('packet_in', 'Keyring_PacketHandler', function(e)
         local byte3 = e.data:byte(0x0E+1)
         local hourglass_time = byte1 + (byte2 * 256) + (byte3 * 65536)
         
-        debug_print('0x02A packet received - Message ID: ' .. messageId .. ', Actor ID: ' .. actor_ID .. ', Hourglass Time: ' .. hourglass_time)
-        
         -- Validation table: Actor ID -> Expected Message ID pairs
         local hourglass_validation = {
             [17772867] = 48733,
@@ -909,7 +907,6 @@ ashita.events.register('packet_in', 'Keyring_PacketHandler', function(e)
         
                          -- Double validation: Check both actor_ID and messageId are valid and match
         local expected_message_id = hourglass_validation[actor_ID]
-        print(chat.header('Keyring'):append(chat.message('DEBUG: Validation check - Expected Message ID: ' .. tostring(expected_message_id) .. ', Match: ' .. tostring(expected_message_id and messageId == expected_message_id))))
         if expected_message_id and messageId == expected_message_id then
              -- This is a confirmed hourglass usage message
              local now = os.time()
@@ -925,10 +922,9 @@ ashita.events.register('packet_in', 'Keyring_PacketHandler', function(e)
                  current_state.hourglass_packet_timestamp = now  -- Store timestamp when packet was received
 
                  
-                 debug_print('Hourglass time updated via 0x02A packet - Actor ID: ' .. actor_ID .. ', Message ID: ' .. messageId .. ', Old Time: ' .. current_base .. ', New Time: ' .. hourglass_time .. ' seconds, Timestamp: ' .. now)
                  print(chat.header('Keyring'):append(chat.message('Empty Hourglass time updated: ' .. hourglass_time .. ' seconds')))
              else
-                 debug_print('0x02A packet received but time (' .. hourglass_time .. ') matches current base (' .. current_base .. ') - no update needed')
+                 -- Time matches current base - no update needed
              end
              
              -- Empty Hourglass time is tracked but not actively consumed here
@@ -938,8 +934,7 @@ ashita.events.register('packet_in', 'Keyring_PacketHandler', function(e)
              return
          end
         
-        -- Log other 0x02A packets for debugging (throttled to prevent spam)
-        debug_print('0x02A packet not recognized as hourglass - Message ID: ' .. messageId .. ', Hourglass Time: ' .. hourglass_time, 5.0)
+
         
     elseif e.id == 0x118 then
         -- Canteen storage response (0x118)
@@ -952,7 +947,6 @@ ashita.events.register('packet_in', 'Keyring_PacketHandler', function(e)
         
         -- Check if canteens increased (indicating new generation)
         if canteenCount > previousCount then
-            debug_print('Canteen count increased - new canteen generated')
             
             -- This could be due to our generation logic or external factors
             -- Don't modify the generation timer here - let update_storage_canteens handle it
@@ -960,7 +954,6 @@ ashita.events.register('packet_in', 'Keyring_PacketHandler', function(e)
             -- Update canteen timestamp for Mystical Canteen (ID 3137) if not already tracked
             local canteenId = 3137
             if not current_state.timestamps or not current_state.timestamps[canteenId] or current_state.timestamps[canteenId] == 0 then
-                debug_print('Canteen acquisition detected')
                 
                 -- Don't set a timestamp - let the user acquire it manually for accuracy
                 if not current_state.owned then current_state.owned = {} end
@@ -972,16 +965,13 @@ ashita.events.register('packet_in', 'Keyring_PacketHandler', function(e)
             end
         elseif canteenCount < previousCount then
             -- Canteen was used (count decreased)
-            debug_print('Canteen count decreased - canteen was used')
             
             -- If storage was full and now has space, start the generation timer
             if previousCount >= 3 and canteenCount < 3 then
                 current_state.last_canteen_time = os.time()
-                debug_print('Storage space available - starting canteen generation timer')
             end
         else
             -- Normal case: just update the count (no change detected)
-            debug_print('Canteen count updated')
         end
 
         current_state.storage_canteens = canteenCount
@@ -1013,21 +1003,14 @@ function handler.get_key_item_statuses()
     
     -- Always try to load persistence if not already loaded
     if not firstLoad then
-        debug_print('Loading persistence for GUI')
+
         handler.load_persistence_file()
     end
     
     local current_state = get_state()
     
-    -- Throttle these debug messages to prevent spam during GUI rendering
-    debug_print('Current state in get_key_item_statuses:', 10.0)  -- 10 second throttle
-    debug_print('  timestamps: ' .. (current_state.timestamps and 'exists' or 'nil'), 10.0)
-    debug_print('  owned: ' .. (current_state.owned and 'exists' or 'nil'), 10.0)
-    if current_state.timestamps then
-        for id, timestamp in pairs(current_state.timestamps) do
-            debug_print('    ID ' .. id .. ': ' .. timestamp, 10.0)
-        end
-    end
+
+
 
     if not current_state.timestamps then
         -- Return empty result if state is invalid
@@ -1054,8 +1037,6 @@ function handler.get_key_item_statuses()
         local remaining = nil  -- Set to nil if no timestamp
         if timestamp > 0 then
             remaining = (timestamp + cooldown) - os.time()
-            debug_print(string.format('Item %d (%s): timestamp=%d, cooldown=%d, current_time=%d, remaining=%d', 
-                id, key_items.idToName[id] or 'Unknown', timestamp, cooldown, os.time(), remaining))
         end
         
         local name = key_items.idToName[id] or ('Unknown ID: ' .. tostring(id))

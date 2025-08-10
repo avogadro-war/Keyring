@@ -435,15 +435,17 @@ ashita.events.register('command', 'command_cb', function(e)
         print(chat.message('  • Moglophone (20h cooldown) - Acquired when obtained'))
         print(chat.message('  • Mystical Canteen (20h generation cycle) - Storage-based tracking'))
         print(chat.message('  • Shiny Rakaznar Plate (20h cooldown) - Starts when used for teleport'))
-        --print(chat.message('  • Dynamis [D] Entry (60h cooldown) - Auto-detected on zone entry'))
-        --print(chat.message('  • Empty Hourglass (24h cooldown) - Auto-detected via NPC interactions'))
+        print(chat.message('  • Dynamis [D] Entry (60h cooldown) - Auto-detected on zone entry'))
+        print(chat.message('  • Empty Hourglass - Time value tracked via NPC interactions'))
         print(chat.message(''))
         print(chat.message('== COMMANDS =='))
         print(chat.message('  /keyring [gui] - Toggle the GUI window'))
         print(chat.message('  /keyring check - Check for available key items (individual callouts)'))
         print(chat.message('  /keyring fix <item> - Manually trigger acquisition for missed packets'))
         print(chat.message('    Available items: moglophone, canteen, plate'))
-        --print(chat.message('  /keyring hourglass <seconds> - Manually set hourglass time for missed packets'))
+        print(chat.message('  /keyring hourglass <seconds> - Manually set hourglass time for missed packets'))
+        print(chat.message('  /keyring reset_hourglass - Reset hourglass time to 0'))
+        print(chat.message('  /keyring force_hourglass <seconds> - Force hourglass time (bypasses validation)'))
         print(chat.message('  /keyring notify - Toggle zone change notifications (default: on)'))
         print(chat.message('  /keyring status - Show addon status and cooldown information'))
         print(chat.message('  /keyring debug - Toggle debug messages in chat'))
@@ -463,6 +465,7 @@ ashita.events.register('command', 'command_cb', function(e)
         print(chat.message('  • Manual acquisition fix for missed packets'))
         print(chat.message('  • Smart cooldown handling per item type'))
         print(chat.message('  • Zone-based automatic Dynamis [D] and Ra\'Kaznar detection'))
+        print(chat.message('  • Empty Hourglass time tracking and status display'))
         print(chat.message(''))
         --print(chat.message('== DEVELOPER COMMANDS =='))
         --print(chat.message('  /keyring test_dynamis - Test Dynamis [D] entry detection'))
@@ -477,7 +480,6 @@ end)
 
 -- Load event
 ashita.events.register('load', 'load_cb', function()
-    debug_print('Addon load event triggered')
     print(chat.header('Keyring'):append(chat.message('Keyring loaded. Key item state will be initialized after first zone.')))
 end)
 
@@ -492,11 +494,9 @@ ashita.events.register('d3d_present', 'LoadDelayTimer', function()
         if player_ready_time == 0 then
             -- First time player is detected - start the delay timer
             player_ready_time = os.time()
-            debug_print('Player data ready, starting 3-second delay for full initialization...')
         elseif os.time() - player_ready_time >= 3 and not persistence_loaded then
             -- 3 seconds have passed, load persistence file
             ashita.events.unregister('d3d_present', 'LoadDelayTimer')
-            debug_print('Delay complete, loading persistence file...')
             
             if packet_tracker.load_persistence_file then
                 packet_tracker.load_persistence_file()
@@ -522,15 +522,7 @@ ashita.events.register('d3d_present', 'render', function()
     -- Render the GUI using the modularized GUI system
     local keyItemStatuses = packet_tracker.get_key_item_statuses()
     
-    -- Debug: Print the statuses being passed to GUI (throttled to prevent spam)
-    if debug_mode and #keyItemStatuses > 0 then
-        -- Use a throttled debug print for render-related messages
-        local debug_message = 'GUI render - keyItemStatuses count: ' .. #keyItemStatuses
-        if not _G.last_gui_debug_time or (os.time() - _G.last_gui_debug_time) >= 10 then
-            debug_print(debug_message)
-            _G.last_gui_debug_time = os.time()
-        end
-    end
+
     
     gui.render(keyItemStatuses, trackedKeyItems, storage_canteens, packet_tracker)
 end)
